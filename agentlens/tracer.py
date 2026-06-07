@@ -16,11 +16,13 @@ from datetime import datetime, timezone
 from typing import Any, TypeVar
 
 from agentlens.context import (
+    get_current_run_id,
     require_current_run_id,
     require_current_store,
     set_current_trace,
 )
 from agentlens.events import EventType, TraceEvent
+from agentlens.serialization import safe_serialize
 from agentlens.storage import JsonlTraceStore
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -247,3 +249,160 @@ def record_log(
         name=message[:120],
         metadata=metadata,
     )
+
+
+def record_file_read(
+    path: str,
+    metadata: dict[str, Any] | None = None,
+) -> TraceEvent:
+    """记录一次文件读取事件。
+
+    Args:
+        path: 文件路径。
+        metadata: 附加信息，可选。
+
+    Returns:
+        创建的 TraceEvent。
+    """
+    meta = metadata or {}
+    meta["path"] = path
+    return record_event(
+        type="file_read",
+        name=path,
+        metadata=meta,
+    )
+
+
+def record_file_write(
+    path: str,
+    content_preview: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> TraceEvent:
+    """记录一次文件写入事件。
+
+    Args:
+        path: 文件路径。
+        content_preview: 写入内容预览，最多保留 1000 字符。
+        metadata: 附加信息，可选。
+
+    Returns:
+        创建的 TraceEvent。
+    """
+    meta = metadata or {}
+    meta["path"] = path
+    output: dict[str, Any] | None = None
+    if content_preview is not None:
+        output = {"content_preview": safe_serialize(content_preview, max_string_length=1000)}
+    return record_event(
+        type="file_write",
+        name=path,
+        output=output,
+        metadata=meta,
+    )
+
+
+# ---------------------------------------------------------------------------
+# traced 装饰器
+# ---------------------------------------------------------------------------
+
+
+def traced(
+    name: str | None = None,
+    event_type: EventType = "tool_call",
+    capture_input: bool = True,
+    capture_output: bool = True,
+    metadata: dict[str, Any] | None = None,
+) -> Callable[[F], F]:
+    """通用函数追踪装饰器 — 将函数调用记录为 Agent 运行中的一步。
+
+    支持 ``@traced`` 和 ``@traced("name")`` 两种用法。
+
+    用法::
+
+        @traced
+        def my_func():
+            ...
+
+        @traced("my-tool", event_type="tool_call")
+        def my_tool():
+            ...
+    """
+    # 支持不带括号的 @traced 用法
+    if callable(name):
+        func = name
+        return _traced_impl(
+            func, func.__name__, event_type, capture_input, capture_output, metadata
+        )
+
+    return lambda fn: _traced_impl(
+        fn,
+        name if name is not None else fn.__name__,
+        event_type,
+        capture_input,
+        capture_output,
+        metadata,
+    )
+
+
+def _traced_impl(
+    func: F,
+    event_name: str,
+    event_type: EventType,
+    capture_input: bool,
+    capture_output: bool,
+    user_metadata: dict[str, Any] | None,
+) -> F:
+    """traced 的实际实现。"""
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        # 没有 trace 上下文 → 直接执行，不记录
+        run_id = get_current_run_id()
+        if run_id is None:
+            return func(*args, **kwargs)
+
+        # 序列化 input
+        safe_input: dict[str, Any] | None = None
+        if capture_input:
+            raw_input = {"args": list(args), "kwargs": dict(kwargs)}
+            safe_input = safe_serialize(raw_input)
+
+        started_at = datetime.now(timezone.utc)
+
+        try:
+            result = func(*args, **kwargs)
+        except Exception as exc:
+            ended_at = datetime.now(timezone.utc)
+            duration_ms = int((ended_at - started_at).total_seconds() * 1000)
+            error_meta = user_metadata.copy() if user_metadata else {}
+            error_meta["duration_ms"] = duration_ms
+            record_event(
+                type="error",
+                name=event_name,
+                input=safe_input,
+                error=f"{type(exc).__name__}: {exc}",
+                metadata=error_meta,
+            )
+            raise
+
+        ended_at = datetime.now(timezone.utc)
+        duration_ms = int((ended_at - started_at).total_seconds() * 1000)
+
+        safe_output: Any | None = None
+        if capture_output:
+            safe_output = safe_serialize(result)
+
+        event_meta = user_metadata.copy() if user_metadata else {}
+        event_meta["duration_ms"] = duration_ms
+
+        record_event(
+            type=event_type,
+            name=event_name,
+            input=safe_input,
+            output=safe_output,
+            metadata=event_meta,
+        )
+
+        return result
+
+    return wrapper  # type: ignore[return-value]

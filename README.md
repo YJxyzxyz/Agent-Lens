@@ -127,6 +127,34 @@ main()
 
 > ⚠️ **安全提醒**：不要提交 `.agentlens/runs` 到 Git，trace 文件可能包含对话内容。
 
+## Generic Function Tracing
+
+AgentLens 不依赖 DeepSeek、OpenAI、LangChain 或任何特定模型 provider。
+你可以用 `@traced` 追踪任意 Python 函数，作为 Agent 运行中的一步。
+
+```python
+from agentlens import trace, traced, record_file_write
+
+@traced("search_web", event_type="tool_call")
+def search_web(query: str):
+    return {"results": 3}
+
+@traced("summarize", event_type="llm_call")
+def summarize(text: str):
+    return "summary..."
+
+@trace("my-agent")
+def main():
+    results = search_web("RAG benchmark")
+    answer = summarize(str(results))
+    record_file_write("report.md", content_preview=answer)
+    return answer
+
+main()
+```
+
+`@traced` 自动捕获参数和返回值，脱敏敏感字段，记录执行耗时。
+
 ## Web Timeline Viewer
 
 AgentLens 内置本地 Web 查看器，在浏览器中浏览 trace 数据。
