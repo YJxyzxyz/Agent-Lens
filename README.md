@@ -96,9 +96,41 @@ $ agentlens show run_20260607_124820_ad2c5ef4
 | `error` | 错误 | 异常发生 |
 | `log` | 日志 | 自定义消息 |
 
+## DeepSeek 集成
+
+AgentLens 通过 OpenAI-compatible API 自动追踪 DeepSeek 调用。
+
+```bash
+pip install -e ".[deepseek]"
+```
+
+```python
+from openai import OpenAI
+from agentlens import trace
+from agentlens.integrations.deepseek import instrument_deepseek
+
+instrument_deepseek()
+
+@trace("deepseek-demo")
+def main():
+    client = OpenAI(api_key="sk-...", base_url="https://api.deepseek.com")
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[{"role": "user", "content": "Hello"}],
+    )
+    print(response.choices[0].message.content)
+
+main()
+```
+
+每次 `chat.completions.create` 调用会自动记录 `llm_call` 事件，包含 model、messages、usage 等信息（API key 自动脱敏）。
+
+> ⚠️ **安全提醒**：不要提交 `.agentlens/runs` 到 Git，trace 文件可能包含对话内容。
+
 ## 路线图
 
-- [ ] **v0.2** — OpenAI SDK 集成 / LangChain Callback / 事件树形关联
+- [x] **v0.1** — 基础 tracing / JSONL 存储 / CLI / DeepSeek 集成
+- [ ] **v0.2** — LangChain Callback / 事件树形关联 / 更多 provider 集成
 - [ ] **v0.3** — 本地 Web Timeline Viewer / 统计摘要 / JSON/CSV 导出
 - [ ] **v0.4** — Run Replay / 回归测试 / diff 增强
 - [ ] **v1.0** — 插件系统 / 性能优化 / 文档站点

@@ -37,6 +37,8 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.8",
 ]
+openai-compatible = ["openai>=1.0.0"]
+deepseek = ["openai>=1.0.0"]
 
 [project.scripts]
 agentlens = "agentlens.cli:app"
