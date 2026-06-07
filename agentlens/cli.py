@@ -233,6 +233,47 @@ def diff_runs(
 
 
 # ---------------------------------------------------------------------------
+# view 命令
+# ---------------------------------------------------------------------------
+
+
+@app.command("view")
+def view_runs(
+    host: str = typer.Option(
+        "127.0.0.1",
+        "--host",
+        "-h",
+        help="绑定地址",
+    ),
+    port: int = typer.Option(
+        8765,
+        "--port",
+        "-p",
+        help="端口号",
+    ),
+    base_dir: Path | None = typer.Option(
+        None,
+        "--base-dir",
+        "-d",
+        help="存储根目录，默认 .agentlens/runs/",
+    ),
+) -> None:
+    """启动本地 Web Timeline Viewer。"""
+    try:
+        from agentlens.viewer import start_viewer
+    except ImportError:
+        console.print(
+            "[red]未安装 web 依赖。请运行:[/red]\n"
+            "  pip install agentlens[web]\n"
+            "或:\n"
+            "  pip install fastapi uvicorn"
+        )
+        raise typer.Exit(code=1) from None
+
+    start_viewer(host=host, port=port, base_dir=base_dir)
+
+
+# ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
 

@@ -127,12 +127,26 @@ main()
 
 > ⚠️ **安全提醒**：不要提交 `.agentlens/runs` 到 Git，trace 文件可能包含对话内容。
 
+## Web Timeline Viewer
+
+AgentLens 内置本地 Web 查看器，在浏览器中浏览 trace 数据。
+
+```bash
+pip install -e ".[web]"
+agentlens view
+```
+
+启动后打开 http://127.0.0.1:8765 即可查看所有 run 的事件时间线。
+支持自定义地址和端口：`agentlens view --host 0.0.0.0 --port 8080`。
+
+> 🔒 仅本地只读访问，不向任何远程服务发送数据。
+
 ## 路线图
 
-- [x] **v0.1** — 基础 tracing / JSONL 存储 / CLI / DeepSeek 集成
+- [x] **v0.1** — 基础 tracing / JSONL 存储 / CLI / DeepSeek 集成 / Web Timeline Viewer
 - [ ] **v0.2** — LangChain Callback / 事件树形关联 / 更多 provider 集成
-- [ ] **v0.3** — 本地 Web Timeline Viewer / 统计摘要 / JSON/CSV 导出
-- [ ] **v0.4** — Run Replay / 回归测试 / diff 增强
+- [ ] **v0.3** — 统计摘要 / JSON/CSV 导出 / diff 增强
+- [ ] **v0.4** — Run Replay / 回归测试
 - [ ] **v1.0** — 插件系统 / 性能优化 / 文档站点
 
 ## 贡献
