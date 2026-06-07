@@ -4,15 +4,24 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentlens"
-version = "0.1.0"
-description = "AI Agent 的黑匣子 — 轻量级 Agent 运行追踪、回放和调试工具"
+version = "0.1.0a0"
+description = "The open source flight recorder for AI agents — 本地追踪、回放和调试工具"
 readme = "README.md"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 authors = [
     { name = "AgentLens Contributors" },
 ]
-keywords = ["ai-agent", "tracing", "debugging", "observability", "llm"]
+keywords = [
+    "ai-agent",
+    "tracing",
+    "debugging",
+    "observability",
+    "llm",
+    "deepseek",
+    "openai",
+    "agent",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -22,7 +31,18 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Debuggers",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Operating System :: OS Independent",
+    "Framework :: FastAPI",
+    "Environment :: Console",
+    "Environment :: Web Environment",
 ]
+
+[project.urls]
+Homepage = "https://github.com/YJxyzxyz/Agent-Lens"
+Documentation = "https://github.com/YJxyzxyz/Agent-Lens/tree/main/docs"
+Repository = "https://github.com/YJxyzxyz/Agent-Lens"
+Issues = "https://github.com/YJxyzxyz/Agent-Lens/issues"
+Changelog = "https://github.com/YJxyzxyz/Agent-Lens/blob/main/CHANGELOG.md"
 
 dependencies = [
     "pydantic>=2.0",

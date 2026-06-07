@@ -15,72 +15,76 @@
   <a href="https://pypi.org/project/agentlens"><img src="https://img.shields.io/pypi/v/agentlens" alt="PyPI"></a>
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
+  <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.1.0--alpha-orange" alt="Version"></a>
 </p>
 
 ---
 
-## 为什么需要 AgentLens？
+> ⚠️ **Alpha Release** — APIs 在 v1.0 前可能变更。欢迎反馈和贡献！
 
-AI Agent 越来越复杂：多轮 LLM 调用、工具调用链、文件操作……当 Agent 行为不符合预期时，你很难知道**它到底做了什么**。
-
-AgentLens 像飞机的黑匣子一样，以最小侵入的方式记录 Agent 的每一步运行事件，
-让你可以**追踪、回放和调试** Agent 的行为 — 全部本地运行，零云依赖。
-
-## 核心功能
-
-- 🎯 **`@trace` 一行装饰** — 包裹任何函数，自动记录运行生命周期
-- 📝 **9 种事件类型** — `run_start`、`run_end`、`llm_call`、`tool_call`、`file_read`、`file_write`、`browser_action`、`error`、`log`
-- 💾 **本地 JSONL 存储** — 数据完全在本地 `.agentlens/runs/`，无需任何云服务
-- 🖥️ **CLI 工具** — `list` / `show` / `inspect` / `diff` 快速查看和对比
-- 🔒 **并发安全** — 基于 `contextvars` 的上下文隔离
-
-## 快速开始
+## 安装
 
 ```bash
 pip install agentlens
 ```
 
+或开发安装：
+
+```bash
+git clone https://github.com/YJxyzxyz/Agent-Lens.git
+cd Agent-Lens
+pip install -e ".[dev]"
+```
+
+可选依赖：
+
+```bash
+pip install -e ".[web]"         # Web Timeline Viewer
+pip install -e ".[deepseek]"    # DeepSeek 自动追踪
+```
+
+AI Agent 越来越复杂。AgentLens 像飞机的黑匣子，以最小侵入的方式记录每一步运行事件。
+
+## 最短示例
+
 ```python
-from agentlens import trace, record_llm_call, record_tool_call, record_log
+from agentlens import trace, traced, record_file_write
+
+@traced("search", event_type="tool_call")
+def search(query: str):
+    return {"results": 3}
 
 @trace("my-agent")
 def main():
-    record_log("Agent started")
-    record_llm_call(
-        model="gpt-4.1",
-        input="Plan a research task",
-        output="I should search first."
-    )
-    record_tool_call(
-        name="search_web",
-        input={"query": "RAG evaluation"},
-        output={"results": 3}
-    )
-    record_log("Agent finished")
+    search("RAG evaluation")
+    record_file_write("report.md", content_preview="done")
 
 main()
 ```
 
-运行后，追踪数据自动保存到 `.agentlens/runs/`。
-
-## CLI 示例
-
 ```bash
-$ agentlens list
-           AgentLens Runs
-┏━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ # ┃ Run ID                       ┃
-┡━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ 1 │ run_20260607_124820_ad2c5ef4 │
-└───┴──────────────────────────────┘
-
-$ agentlens show run_20260607_124820_ad2c5ef4
-  [run_start] simple-agent
-  [log]       Agent started
-  [llm_call]  gpt-4.1
-  [tool_call] search_web
-  [run_end]   simple-agent
+agentlens list && agentlens show <run_id>
+agentlens view   # Web 查看器
 ```
+
+## 核心功能
+
+- 🎯 **`@trace`** + **`@traced`** 装饰器
+- 🤖 **DeepSeek / OpenAI-compatible** 自动追踪
+- 💾 **本地 JSONL 存储**
+- 🖥️ **CLI**（list / show / inspect / diff / view）
+- 🌐 **Web Timeline Viewer**
+
+## 文档
+
+| 文档 | 说明 |
+|------|------|
+| [Quick Start](docs/quickstart.md) | 安装与运行示例 |
+| [DeepSeek 集成](docs/deepseek.md) | DeepSeek / OpenAI-compatible 自动追踪 |
+| [通用函数追踪](docs/generic-tracing.md) | `@traced` 使用指南 |
+| [Web Viewer](docs/web-viewer.md) | 本地 Web UI 使用说明 |
+| [Changelog](CHANGELOG.md) | 版本更新记录 |
+| [Release Notes](RELEASE_NOTES.md) | v0.1.0-alpha 发布说明 |
 
 ## 事件类型
 
@@ -96,78 +100,22 @@ $ agentlens show run_20260607_124820_ad2c5ef4
 | `error` | 错误 | 异常发生 |
 | `log` | 日志 | 自定义消息 |
 
-## DeepSeek 集成
+## DeepSeek / OpenAI-compatible
 
-AgentLens 通过 OpenAI-compatible API 自动追踪 DeepSeek 调用。
+一行集成，自动追踪 live API 调用。详见 [DeepSeek 集成指南](docs/deepseek.md)。
 
-```bash
-pip install -e ".[deepseek]"
-```
+## `@traced` 通用追踪
 
-```python
-from openai import OpenAI
-from agentlens import trace
-from agentlens.integrations.deepseek import instrument_deepseek
-
-instrument_deepseek()
-
-@trace("deepseek-demo")
-def main():
-    client = OpenAI(api_key="sk-...", base_url="https://api.deepseek.com")
-    response = client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[{"role": "user", "content": "Hello"}],
-    )
-    print(response.choices[0].message.content)
-
-main()
-```
-
-每次 `chat.completions.create` 调用会自动记录 `llm_call` 事件，包含 model、messages、usage 等信息（API key 自动脱敏）。
-
-> ⚠️ **安全提醒**：不要提交 `.agentlens/runs` 到 Git，trace 文件可能包含对话内容。
-
-## Generic Function Tracing
-
-AgentLens 不依赖 DeepSeek、OpenAI、LangChain 或任何特定模型 provider。
-你可以用 `@traced` 追踪任意 Python 函数，作为 Agent 运行中的一步。
-
-```python
-from agentlens import trace, traced, record_file_write
-
-@traced("search_web", event_type="tool_call")
-def search_web(query: str):
-    return {"results": 3}
-
-@traced("summarize", event_type="llm_call")
-def summarize(text: str):
-    return "summary..."
-
-@trace("my-agent")
-def main():
-    results = search_web("RAG benchmark")
-    answer = summarize(str(results))
-    record_file_write("report.md", content_preview=answer)
-    return answer
-
-main()
-```
-
-`@traced` 自动捕获参数和返回值，脱敏敏感字段，记录执行耗时。
+无需特定 SDK，追踪任意 Python 函数。详见 [通用函数追踪](docs/generic-tracing.md)。
 
 ## Web Timeline Viewer
 
-AgentLens 内置本地 Web 查看器，在浏览器中浏览 trace 数据。
+本地只读 Web UI。详见 [Web Viewer 文档](docs/web-viewer.md)。
 
 ```bash
 pip install -e ".[web]"
 agentlens view
 ```
-
-启动后打开 http://127.0.0.1:8765 即可查看所有 run 的事件时间线。
-支持自定义地址和端口：`agentlens view --host 0.0.0.0 --port 8080`。
-
-> 🔒 仅本地只读访问，不向任何远程服务发送数据。
 
 ## 路线图
 
