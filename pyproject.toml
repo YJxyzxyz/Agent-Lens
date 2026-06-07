@@ -37,18 +37,18 @@ classifiers = [
     "Environment :: Web Environment",
 ]
 
+dependencies = [
+    "pydantic>=2.0",
+    "typer>=0.9",
+    "rich>=13.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/YJxyzxyz/Agent-Lens"
 Documentation = "https://github.com/YJxyzxyz/Agent-Lens/tree/main/docs"
 Repository = "https://github.com/YJxyzxyz/Agent-Lens"
 Issues = "https://github.com/YJxyzxyz/Agent-Lens/issues"
 Changelog = "https://github.com/YJxyzxyz/Agent-Lens/blob/main/CHANGELOG.md"
-
-dependencies = [
-    "pydantic>=2.0",
-    "typer>=0.9",
-    "rich>=13.0",
-]
 
 [project.optional-dependencies]
 dev = [
