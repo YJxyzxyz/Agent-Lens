@@ -5,8 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from agentlens import JsonlTraceStore, record_event, record_llm_call, record_log, record_tool_call, trace
-from agentlens.storage import DEFAULT_BASE_DIR
+from agentlens import (
+    JsonlTraceStore,
+    record_llm_call,
+    record_log,
+    record_tool_call,
+    trace,
+)
 
 
 class TestTraceDecorator:

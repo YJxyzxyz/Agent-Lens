@@ -7,13 +7,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from agentlens.events import TraceEvent
 from agentlens.storage import JsonlTraceStore
 
 app = typer.Typer(
@@ -29,7 +27,8 @@ console = Console()
 # 辅助函数
 # ---------------------------------------------------------------------------
 
-def _get_store(base_dir: Optional[Path] = None) -> JsonlTraceStore:
+
+def _get_store(base_dir: Path | None = None) -> JsonlTraceStore:
     return JsonlTraceStore(base_dir=base_dir)
 
 
@@ -37,9 +36,10 @@ def _get_store(base_dir: Optional[Path] = None) -> JsonlTraceStore:
 # list 命令
 # ---------------------------------------------------------------------------
 
+
 @app.command("list")
 def list_runs(
-    base_dir: Optional[Path] = typer.Option(
+    base_dir: Path | None = typer.Option(
         None,
         "--base-dir",
         "-d",
@@ -68,10 +68,11 @@ def list_runs(
 # show 命令
 # ---------------------------------------------------------------------------
 
+
 @app.command("show")
 def show_run(
     run_id: str = typer.Argument(..., help="要查看的 run_id"),
-    base_dir: Optional[Path] = typer.Option(
+    base_dir: Path | None = typer.Option(
         None,
         "--base-dir",
         "-d",
@@ -122,10 +123,11 @@ def show_run(
 # inspect 命令
 # ---------------------------------------------------------------------------
 
+
 @app.command("inspect")
 def inspect_run(
     run_id: str = typer.Argument(..., help="要查看的 run_id"),
-    base_dir: Optional[Path] = typer.Option(
+    base_dir: Path | None = typer.Option(
         None,
         "--base-dir",
         "-d",
@@ -176,11 +178,12 @@ def inspect_run(
 # diff 命令
 # ---------------------------------------------------------------------------
 
+
 @app.command("diff")
 def diff_runs(
     run_a: str = typer.Argument(..., help="第一个 run_id"),
     run_b: str = typer.Argument(..., help="第二个 run_id"),
-    base_dir: Optional[Path] = typer.Option(
+    base_dir: Path | None = typer.Option(
         None,
         "--base-dir",
         "-d",
@@ -205,9 +208,7 @@ def diff_runs(
     # 比较长度
     if len_a != len_b:
         console.print(
-            f"[yellow]事件数量不同:[/yellow] "
-            f"{run_a} 有 {len_a} 个事件, "
-            f"{run_b} 有 {len_b} 个事件"
+            f"[yellow]事件数量不同:[/yellow] {run_a} 有 {len_a} 个事件, {run_b} 有 {len_b} 个事件"
         )
 
     # 逐事件比较 type 和 name
@@ -228,14 +229,13 @@ def diff_runs(
     if not diff_found and len_a == len_b:
         console.print("[green]两个 run 的事件序列完全一致。[/green]")
     elif not diff_found:
-        console.print(
-            f"[yellow]前 {min_len} 个事件一致，但总长度不同。[/yellow]"
-        )
+        console.print(f"[yellow]前 {min_len} 个事件一致，但总长度不同。[/yellow]")
 
 
 # ---------------------------------------------------------------------------
 # 入口
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     app()

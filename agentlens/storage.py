@@ -5,10 +5,8 @@
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
-from typing import Optional
 
 from agentlens.events import TraceEvent
 
@@ -23,6 +21,7 @@ DEFAULT_BASE_DIR = Path.cwd() / ".agentlens" / "runs"
 # JSONL 存储实现
 # ---------------------------------------------------------------------------
 
+
 class JsonlTraceStore:
     """基于本地 JSONL 文件的追踪事件存储。
 
@@ -34,7 +33,7 @@ class JsonlTraceStore:
         runs = store.list_runs()
     """
 
-    def __init__(self, base_dir: Optional[Path] = None) -> None:
+    def __init__(self, base_dir: Path | None = None) -> None:
         """初始化存储。
 
         Args:
@@ -75,7 +74,7 @@ class JsonlTraceStore:
             return []
 
         events: list[TraceEvent] = []
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:

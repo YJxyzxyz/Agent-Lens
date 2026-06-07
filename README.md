@@ -1,29 +1,44 @@
-# AgentLens 🔍
+<!--
+  AgentLens — The open source flight recorder for AI agents.
+-->
+<p align="center">
+  <h1 align="center">🔍 AgentLens</h1>
+  <p align="center">
+    <strong>The open source flight recorder for AI agents.</strong>
+    <br/>
+    AI Agent 的黑匣子 — 记录每一步，随时回放与调试。
+  </p>
+</p>
 
-> **AI Agent 的黑匣子** — 轻量级 Agent 运行追踪、回放和调试工具。
-
-AgentLens 以最小侵入的方式记录 AI Agent 每一步运行事件，帮助你理解、调试和优化 Agent 行为。
-
----
-
-## 安装
-
-```bash
-# 克隆项目
-git clone https://github.com/your-org/agentlens.git
-cd agentlens
-
-# 创建虚拟环境（推荐）
-conda create -n agentlens python=3.11 -y
-conda activate agentlens
-
-# 安装（开发模式）
-pip install -e ".[dev]"
-```
+<p align="center">
+  <a href="https://github.com/YJxyzxyz/Agent-Lens/actions"><img src="https://github.com/YJxyzxyz/Agent-Lens/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://pypi.org/project/agentlens"><img src="https://img.shields.io/pypi/v/agentlens" alt="PyPI"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License"></a>
+</p>
 
 ---
+
+## 为什么需要 AgentLens？
+
+AI Agent 越来越复杂：多轮 LLM 调用、工具调用链、文件操作……当 Agent 行为不符合预期时，你很难知道**它到底做了什么**。
+
+AgentLens 像飞机的黑匣子一样，以最小侵入的方式记录 Agent 的每一步运行事件，
+让你可以**追踪、回放和调试** Agent 的行为 — 全部本地运行，零云依赖。
+
+## 核心功能
+
+- 🎯 **`@trace` 一行装饰** — 包裹任何函数，自动记录运行生命周期
+- 📝 **9 种事件类型** — `run_start`、`run_end`、`llm_call`、`tool_call`、`file_read`、`file_write`、`browser_action`、`error`、`log`
+- 💾 **本地 JSONL 存储** — 数据完全在本地 `.agentlens/runs/`，无需任何云服务
+- 🖥️ **CLI 工具** — `list` / `show` / `inspect` / `diff` 快速查看和对比
+- 🔒 **并发安全** — 基于 `contextvars` 的上下文隔离
 
 ## 快速开始
+
+```bash
+pip install agentlens
+```
 
 ```python
 from agentlens import trace, record_llm_call, record_tool_call, record_log
@@ -43,107 +58,61 @@ def main():
     )
     record_log("Agent finished")
 
-if __name__ == "__main__":
-    main()
+main()
 ```
 
-运行后，追踪数据会自动保存到 `.agentlens/runs/` 目录下。
+运行后，追踪数据自动保存到 `.agentlens/runs/`。
 
----
-
-## CLI 使用
+## CLI 示例
 
 ```bash
-# 列出所有追踪记录
-agentlens list
+$ agentlens list
+           AgentLens Runs
+┏━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ # ┃ Run ID                       ┃
+┡━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 1 │ run_20260607_124820_ad2c5ef4 │
+└───┴──────────────────────────────┘
 
-# 查看事件时间线（简洁格式）
-agentlens show <run_id>
-
-# 查看完整 JSON 事件
-agentlens inspect <run_id>
-
-# 对比两次运行
-agentlens diff <run_a> <run_b>
+$ agentlens show run_20260607_124820_ad2c5ef4
+  [run_start] simple-agent
+  [log]       Agent started
+  [llm_call]  gpt-4.1
+  [tool_call] search_web
+  [run_end]   simple-agent
 ```
 
----
+## 事件类型
 
-## MVP 功能
+| 事件类型 | 说明 | 示例 |
+|----------|------|------|
+| `run_start` | 运行开始 | Agent 启动 |
+| `run_end` | 运行结束 | Agent 正常完成 |
+| `llm_call` | LLM 调用 | 调用 GPT-4 |
+| `tool_call` | 工具调用 | 搜索、计算 |
+| `file_read` | 文件读取 | 读取配置 |
+| `file_write` | 文件写入 | 保存结果 |
+| `browser_action` | 浏览器操作 | 点击、导航 |
+| `error` | 错误 | 异常发生 |
+| `log` | 日志 | 自定义消息 |
 
-- ✅ **事件追踪** — 支持 `run_start`、`run_end`、`llm_call`、`tool_call`、`file_read`、`file_write`、`browser_action`、`error`、`log` 共 9 种事件类型
-- ✅ **`@trace` 装饰器** — 一行代码包裹函数，自动记录运行生命周期
-- ✅ **便捷记录函数** — `record_llm_call`、`record_tool_call`、`record_log` 等开箱即用
-- ✅ **本地 JSONL 存储** — 零依赖云服务，数据完全在本地
-- ✅ **CLI 工具** — `list` / `show` / `inspect` / `diff` 四个命令快速查看和对比
-- ✅ **并发安全** — 基于 `contextvars` 的上下文隔离
-- ✅ **完整测试** — pytest 覆盖核心功能
+## 路线图
 
----
+- [ ] **v0.2** — OpenAI SDK 集成 / LangChain Callback / 事件树形关联
+- [ ] **v0.3** — 本地 Web Timeline Viewer / 统计摘要 / JSON/CSV 导出
+- [ ] **v0.4** — Run Replay / 回归测试 / diff 增强
+- [ ] **v1.0** — 插件系统 / 性能优化 / 文档站点
 
-## 项目结构
+## 贡献
 
-```
-agentlens/
-├── agentlens/
-│   ├── __init__.py      # 包导出
-│   ├── events.py        # 事件模型 (Pydantic)
-│   ├── storage.py       # JSONL 存储层
-│   ├── context.py       # 上下文管理 (contextvars)
-│   ├── tracer.py        # 追踪 API (装饰器 + 记录函数)
-│   └── cli.py           # CLI (Typer)
-├── tests/
-│   ├── test_events.py
-│   ├── test_storage.py
-│   └── test_tracer.py
-├── examples/
-│   └── simple_agent.py
-├── pyproject.toml
-├── README.md
-└── .gitignore
-```
+欢迎贡献！请查看 [CONTRIBUTING.md](CONTRIBUTING.md) 了解开发环境搭建和 PR 流程。
 
----
+## 安全提醒
 
-## Roadmap
-
-### v0.2 — 集成增强
-- [ ] OpenAI SDK 自动插桩（`chat.completions.create` 拦截）
-- [ ] LangChain Callback Handler
-- [ ] 事件 parent_id 树形关联
-
-### v0.3 — 可视化与分析
-- [ ] 本地 Web Timeline Viewer（单页 HTML）
-- [ ] 事件统计摘要（LLM 调用次数、Token 消耗、延迟分布）
-- [ ] 导出为 JSON / CSV
-
-### v0.4 — 回放与回归
-- [ ] Run Replay（基于录制的事件重新执行）
-- [ ] 回归测试（对比两次运行的输出一致性）
-- [ ] 差异可视化（diff 增强）
-
-### v1.0 — 生产就绪
-- [ ] 插件系统（自定义事件类型、自定义存储后端）
-- [ ] 性能优化（批量写入、压缩存储）
-- [ ] 文档站点
-
----
-
-## 开发
-
-```bash
-# 运行测试
-pytest
-
-# 运行示例
-python examples/simple_agent.py
-
-# 查看追踪结果
-agentlens list
-agentlens show <run_id>
-```
-
----
+⚠️ trace 数据可能包含 LLM 输入输出、工具参数等敏感信息。
+数据默认存储在本地 `.agentlens/runs/`，已被 `.gitignore` 排除。
+**请勿提交包含敏感信息的 trace 文件到 Git。**
+详见 [SECURITY.md](SECURITY.md)。
 
 ## License
 

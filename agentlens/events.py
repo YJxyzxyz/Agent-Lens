@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -44,6 +44,7 @@ ALL_EVENT_TYPES: tuple[EventType, ...] = (
 # 事件模型
 # ---------------------------------------------------------------------------
 
+
 class TraceEvent(BaseModel):
     """一次 Agent 运行中的单个追踪事件。
 
@@ -63,14 +64,14 @@ class TraceEvent(BaseModel):
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
     run_id: str
-    parent_id: Optional[str] = None
+    parent_id: str | None = None
     type: EventType
     name: str
-    input: Optional[Any] = None
-    output: Optional[Any] = None
+    input: Any | None = None
+    output: Any | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    ended_at: Optional[datetime] = None
-    error: Optional[str] = None
+    ended_at: datetime | None = None
+    error: str | None = None
 
     model_config = {"extra": "forbid"}

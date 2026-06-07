@@ -11,17 +11,17 @@ from __future__ import annotations
 import functools
 import secrets
 import traceback as tb
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, TypeVar
 
 from agentlens.context import (
-    get_current_run_id,
     require_current_run_id,
     require_current_store,
     set_current_trace,
 )
 from agentlens.events import EventType, TraceEvent
-from agentlens.storage import DEFAULT_BASE_DIR, JsonlTraceStore
+from agentlens.storage import JsonlTraceStore
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -29,6 +29,7 @@ F = TypeVar("F", bound=Callable[..., Any])
 # ---------------------------------------------------------------------------
 # 工具函数
 # ---------------------------------------------------------------------------
+
 
 def _generate_run_id() -> str:
     """生成唯一 run_id，格式: run_YYYYMMDD_HHMMSS_<随机8字符>"""
@@ -41,11 +42,12 @@ def _generate_run_id() -> str:
 # trace 装饰器
 # ---------------------------------------------------------------------------
 
+
 def trace(
     name: str,
     *,
-    store: Optional[JsonlTraceStore] = None,
-    run_id: Optional[str] = None,
+    store: JsonlTraceStore | None = None,
+    run_id: str | None = None,
 ) -> Callable[[F], F]:
     """追踪装饰器 — 自动记录函数的 run_start / run_end / error 事件。
 
@@ -123,14 +125,15 @@ def trace(
 # 事件记录函数
 # ---------------------------------------------------------------------------
 
+
 def record_event(
     type: EventType,
     name: str,
-    input: Optional[Any] = None,
-    output: Optional[Any] = None,
-    metadata: Optional[dict[str, Any]] = None,
-    error: Optional[str] = None,
-    parent_id: Optional[str] = None,
+    input: Any | None = None,
+    output: Any | None = None,
+    metadata: dict[str, Any] | None = None,
+    error: str | None = None,
+    parent_id: str | None = None,
 ) -> TraceEvent:
     """向当前 run 追加一条事件。
 
@@ -173,11 +176,12 @@ def record_event(
 # 便捷函数
 # ---------------------------------------------------------------------------
 
+
 def record_llm_call(
     model: str,
     input: Any,
     output: Any,
-    metadata: Optional[dict[str, Any]] = None,
+    metadata: dict[str, Any] | None = None,
 ) -> TraceEvent:
     """记录一次 LLM 调用事件。
 
@@ -203,7 +207,7 @@ def record_tool_call(
     name: str,
     input: Any,
     output: Any,
-    metadata: Optional[dict[str, Any]] = None,
+    metadata: dict[str, Any] | None = None,
 ) -> TraceEvent:
     """记录一次工具调用事件。
 
@@ -227,7 +231,7 @@ def record_tool_call(
 
 def record_log(
     message: str,
-    metadata: Optional[dict[str, Any]] = None,
+    metadata: dict[str, Any] | None = None,
 ) -> TraceEvent:
     """记录一条日志事件。
 
