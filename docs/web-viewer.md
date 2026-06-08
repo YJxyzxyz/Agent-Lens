@@ -35,6 +35,22 @@ agentlens view --base-dir /path/to/runs
 - **详情页** — 事件时间线，按类型着色
 - **展开/折叠** — 点击事件查看 input / output / metadata JSON
 
+## Visual Diff
+
+对比两次 Agent 运行的事件差异：
+
+1. 启动 `agentlens view`
+2. 在首页勾选两个 run 的 checkbox
+3. 点击 **Compare selected**
+4. 或直接访问 URL：`http://127.0.0.1:8765/diff?left=<run_id>&right=<run_id>`
+
+Diff 页面显示：
+
+- 左右两侧 run 的事件数
+- 第一个差异位置
+- 逐事件对比表格（相同 / 不同 / 缺失）
+- 点击事件可展开查看 input/output/metadata
+
 ## 安全说明
 
 - 🔒 仅本地只读访问

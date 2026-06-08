@@ -1,6 +1,6 @@
 """AgentLens 本地 Web Timeline Viewer。
 
-基于 FastAPI 的轻量级本地 Web UI，用于浏览和查看 trace run。
+基于 FastAPI 的轻量级本地 Web UI，用于浏览、查看和对比 trace run。
 """
 
 from __future__ import annotations
@@ -120,6 +120,18 @@ _STYLE = """
   .back-link { display: inline-block; margin-bottom: 16px; }
   .empty { text-align: center; padding: 60px 20px; color: #8b949e; }
   .empty h2 { color: #c9d1d9; }
+  .diff-form { margin: 16px 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .diff-form button { padding: 6px 16px; background: #238636; color: #fff; border: none;
+                      border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+  .diff-form button:hover { background: #2ea043; }
+  .diff-msg { color: #f85149; font-size: 0.85rem; margin-left: 8px; display: none; }
+  .diff-table td { vertical-align: top; }
+  .diff-same { color: #8b949e; }
+  .diff-changed { background: rgba(210, 153, 34, 0.15); }
+  .diff-missing_left { background: rgba(56, 139, 253, 0.12); }
+  .diff-missing_right { background: rgba(56, 139, 253, 0.12); }
+  .diff-summary { margin: 16px 0; font-size: 0.9rem; }
+  .diff-summary span { margin-right: 24px; }
 </style>
 """
 
@@ -129,12 +141,23 @@ _SCRIPT = """
     var el = document.getElementById('body-' + id);
     el.classList.toggle('open');
   }
+  function submitCompare() {
+    var checked = document.querySelectorAll('.compare-cb:checked');
+    if (checked.length !== 2) {
+      var msg = document.getElementById('diff-msg');
+      msg.style.display = 'inline';
+      return false;
+    }
+    document.getElementById('left-id').value = checked[0].value;
+    document.getElementById('right-id').value = checked[1].value;
+    return true;
+  }
 </script>
 """
 
 
 def _render_index(summaries: list[dict[str, Any]]) -> str:
-    """渲染首页 run 列表。"""
+    """渲染首页 run 列表（含 compare checkbox）。"""
     rows = ""
     for s in summaries:
         status = (
@@ -142,23 +165,34 @@ def _render_index(summaries: list[dict[str, Any]]) -> str:
             if s["has_error"]
             else '<span class="badge badge-ok">ok</span>'
         )
+        rid = html.escape(s["run_id"])
         rows += (
-            f"<tr>"
-            f'<td><a href="/run/{html.escape(s["run_id"])}">{html.escape(s["run_id"])}</a></td>'
+            "<tr>"
+            f'<td><input type="checkbox" class="compare-cb" value="{rid}"></td>'
+            f'<td><a href="/run/{rid}">{rid}</a></td>'
             f"<td>{html.escape(s['name'])}</td>"
             f"<td>{html.escape(_fmt_time(s.get('start_time')))}</td>"
             f"<td>{s['event_count']}</td>"
             f"<td>{status}</td>"
-            f"</tr>"
+            "</tr>"
         )
 
     if not summaries:
         body = '<div class="empty"><h2>暂无追踪记录</h2><p>运行你的 Agent 后刷新页面。</p></div>'
+        compare_form = ""
     else:
+        compare_form = (
+            '<form class="diff-form" method="get" action="/diff" onsubmit="return submitCompare()">'
+            '<input type="hidden" name="left" id="left-id">'
+            '<input type="hidden" name="right" id="right-id">'
+            '<button type="submit">Compare selected</button>'
+            '<span id="diff-msg" class="diff-msg">Select exactly two runs to compare.</span>'
+            "</form>"
+        )
         body = (
             "<table>"
             "<thead><tr>"
-            "<th>Run ID</th><th>Name</th><th>Start Time</th><th>Events</th><th>Status</th>"
+            "<th></th><th>Run ID</th><th>Name</th><th>Start Time</th><th>Events</th><th>Status</th>"
             "</tr></thead>"
             f"<tbody>{rows}</tbody>"
             "</table>"
@@ -175,6 +209,7 @@ def _render_index(summaries: list[dict[str, Any]]) -> str:
 <body>
 <h1>🔍 AgentLens Timeline Viewer</h1>
 <p class="meta">Runs directory: {html.escape(str(DEFAULT_BASE_DIR))}</p>
+{compare_form}
 {body}
 <div class="footer">
   ⚠️ Traces may contain prompts, responses, tool inputs, and file paths.
@@ -295,6 +330,184 @@ def _compute_duration(started_at: Any, ended_at: Any) -> int | None:
 
 
 # ---------------------------------------------------------------------------
+# Diff 逻辑
+# ---------------------------------------------------------------------------
+
+
+def _event_summary(ev: dict[str, Any]) -> dict[str, Any]:
+    """从序列化事件提取摘要字段。"""
+    return {
+        "type": ev.get("type", "?"),
+        "name": ev.get("name", ""),
+        "started_at": ev.get("started_at"),
+        "duration_ms": _compute_duration(ev.get("started_at"), ev.get("ended_at")),
+        "error": ev.get("error"),
+        "input": ev.get("input"),
+        "output": ev.get("output"),
+        "metadata": ev.get("metadata"),
+    }
+
+
+def compare_runs(
+    left_events: list[dict[str, Any]], right_events: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """对比两个事件序列，返回 diff 行列表和统计信息。
+
+    Args:
+        left_events: 左侧 run 的事件列表（已序列化为 dict）。
+        right_events: 右侧 run 的事件列表。
+
+    Returns:
+        dict with rows, first_diff, left_count, right_count.
+    """
+    rows: list[dict[str, Any]] = []
+    max_len = max(len(left_events), len(right_events))
+    first_diff: int | None = None
+
+    for i in range(max_len):
+        left = left_events[i] if i < len(left_events) else None
+        right = right_events[i] if i < len(right_events) else None
+
+        if left is None:
+            status = "missing_left"
+        elif right is None:
+            status = "missing_right"
+        elif left.get("type") == right.get("type") and left.get("name") == right.get("name"):
+            status = "same"
+        else:
+            status = "changed"
+
+        if status != "same" and first_diff is None:
+            first_diff = i
+
+        rows.append(
+            {
+                "index": i,
+                "status": status,
+                "left": _event_summary(left) if left else None,
+                "right": _event_summary(right) if right else None,
+            }
+        )
+
+    return {
+        "rows": rows,
+        "first_diff": first_diff,
+        "left_count": len(left_events),
+        "right_count": len(right_events),
+    }
+
+
+def _render_diff(
+    left_id: str,
+    right_id: str,
+    diff_result: dict[str, Any],
+) -> str:
+    """渲染 diff 页面。"""
+    rows_html = ""
+    for row in diff_result["rows"]:
+        status = row["status"]
+        idx = row["index"]
+        left = row.get("left") or {}
+        right = row.get("right") or {}
+
+        left_text = (
+            f"[{html.escape(str(left.get('type', '-')))}] {html.escape(str(left.get('name', '-')))}"
+            if row.get("left")
+            else "—"
+        )
+        right_text = (
+            f"[{html.escape(str(right.get('type', '-')))}] "
+            f"{html.escape(str(right.get('name', '-')))}"
+            if row.get("right")
+            else "—"
+        )
+
+        status_label = {
+            "same": "=",
+            "changed": "≠",
+            "missing_left": "←",
+            "missing_right": "→",
+        }.get(status, "?")
+
+        eid = f"d{idx}"
+        left_detail = _event_detail_html(left, f"{eid}l")
+        right_detail = _event_detail_html(right, f"{eid}r")
+
+        rows_html += f"""
+<tr class="diff-{status}">
+  <td>{idx + 1}</td>
+  <td>{status_label}</td>
+  <td onclick="toggleEvent('{eid}l')" style="cursor:pointer">{left_text}</td>
+  <td onclick="toggleEvent('{eid}r')" style="cursor:pointer">{right_text}</td>
+</tr>
+<tr class="diff-{status}" id="body-{eid}">
+  <td colspan="4" style="padding:4px 14px">
+    <div style="display:flex;gap:16px">
+      <div style="flex:1">{left_detail}</div>
+      <div style="flex:1">{right_detail}</div>
+    </div>
+  </td>
+</tr>"""
+
+    fd = diff_result.get("first_diff")
+    first_diff_text = f"First difference at step #{fd + 1}" if fd is not None else "No differences"
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentLens Diff — {html.escape(left_id)} vs {html.escape(right_id)}</title>
+{_STYLE}
+<style>
+  #body-d0, #body-d1, #body-d2, #body-d3, #body-d4, #body-d5, #body-d6, #body-d7,
+  #body-d8, #body-d9, #body-d10, #body-d11, #body-d12, #body-d13, #body-d14, #body-d15,
+  #body-d16, #body-d17, #body-d18, #body-d19 {{
+    display: none;
+  }}
+</style>
+</head>
+<body>
+<a class="back-link" href="/">← Back to runs</a>
+<h1>Run Diff</h1>
+<div class="diff-summary">
+  <span><strong>Left:</strong> {html.escape(left_id)} ({diff_result["left_count"]} events)</span>
+  <span><strong>Right:</strong> {html.escape(right_id)} ({diff_result["right_count"]} events)</span>
+  <span><strong>{first_diff_text}</strong></span>
+</div>
+<table class="diff-table">
+<thead><tr>
+  <th>#</th><th></th><th>Left</th><th>Right</th>
+</tr></thead>
+<tbody>{rows_html}</tbody>
+</table>
+<div class="footer">
+  ⚠️ Traces may contain prompts, responses, tool inputs, and file paths.
+  Do not share sensitive traces.
+</div>
+{_SCRIPT}
+</body>
+</html>"""
+
+
+def _event_detail_html(ev: dict[str, Any], eid: str) -> str:
+    """渲染单个事件的详情 HTML 片段。"""
+    if not ev:
+        return '<span style="color:#8b949e">—</span>'
+    dur = ev.get("duration_ms")
+    dur_str = f" ({dur}ms)" if dur is not None else ""
+    err = ev.get("error")
+    err_str = f' <span style="color:#f85149">⚠ {html.escape(str(err)[:80])}</span>' if err else ""
+    started = html.escape(ev.get("started_at", "-"))
+    return (
+        f'<div style="font-size:0.82rem">{started}{dur_str}{err_str}</div>'
+        f"{_section('Input', _pretty_json(ev.get('input')))}"
+        f"{_section('Output', _pretty_json(ev.get('output')))}"
+        f"{_section('Metadata', _pretty_json(ev.get('metadata')))}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # FastAPI 应用工厂
 # ---------------------------------------------------------------------------
 
@@ -308,7 +521,7 @@ def create_app(base_dir: Path | None = None):  # noqa: ANN202
     Returns:
         FastAPI app 实例。
     """
-    from fastapi import FastAPI, Request
+    from fastapi import FastAPI, Query
     from fastapi.responses import HTMLResponse
 
     app = FastAPI(title="AgentLens Viewer", docs_url=None, redoc_url=None)
@@ -317,7 +530,7 @@ def create_app(base_dir: Path | None = None):  # noqa: ANN202
         return JsonlTraceStore(base_dir=base_dir)
 
     @app.get("/", response_class=HTMLResponse)
-    async def index(request: Request) -> str:  # noqa: ARG001
+    async def index() -> str:
         store = _store()
         summaries = get_run_summaries(store)
         return _render_index(summaries)
@@ -328,7 +541,40 @@ def create_app(base_dir: Path | None = None):  # noqa: ANN202
         detail = get_run_detail(store, run_id)
         return _render_detail(detail["run_id"], detail["name"], detail["events"])
 
+    @app.get("/diff", response_class=HTMLResponse)
+    async def diff_runs(
+        left: str = Query(..., description="Left run ID"),
+        right: str = Query(..., description="Right run ID"),
+    ) -> str:
+        store = _store()
+        left_events_raw = store.load_run(left)
+        right_events_raw = store.load_run(right)
+
+        if not left_events_raw:
+            return _error_page(f"Run not found: {html.escape(left)}")
+        if not right_events_raw:
+            return _error_page(f"Run not found: {html.escape(right)}")
+
+        left_ev = [e.model_dump(mode="json") for e in left_events_raw]
+        right_ev = [e.model_dump(mode="json") for e in right_events_raw]
+        diff_result = compare_runs(left_ev, right_ev)
+        return _render_diff(left, right, diff_result)
+
     return app
+
+
+def _error_page(message: str) -> str:
+    """渲染错误提示页面。"""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>AgentLens — Error</title>
+{_STYLE}</head>
+<body>
+<a class="back-link" href="/">← Back to runs</a>
+<h1>Error</h1>
+<p style="color:#f85149">{message}</p>
+</body>
+</html>"""
 
 
 # ---------------------------------------------------------------------------

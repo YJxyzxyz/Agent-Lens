@@ -125,3 +125,187 @@ class TestViewerCLI:
         with mock.patch.dict(sys.modules, {"uvicorn": None}):
             with pytest.raises(ImportError, match="未安装 web 依赖"):
                 start_viewer()
+
+
+# ---------------------------------------------------------------------------
+# FastAPI 路由测试
+# ---------------------------------------------------------------------------
+
+
+class TestViewerRoutes:
+    """FastAPI 路由行为测试。"""
+
+    def test_index_returns_html(self, tmp_path):
+        """首页返回 200 且 content-type 为 text/html。"""
+        from fastapi.testclient import TestClient
+
+        from agentlens.viewer import create_app
+
+        app = create_app(base_dir=tmp_path / "runs")
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "AgentLens Timeline Viewer" in resp.text
+
+    def test_index_no_query_error(self, tmp_path):
+        """首页不因缺少 query 参数而返回 JSON error。"""
+        from fastapi.testclient import TestClient
+
+        from agentlens.viewer import create_app
+
+        app = create_app(base_dir=tmp_path / "runs")
+        client = TestClient(app)
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+
+    def test_diff_missing_params_shows_error(self, tmp_path):
+        """/diff 缺少参数时返回 422 或 HTML 错误页。"""
+        from fastapi.testclient import TestClient
+
+        from agentlens.viewer import create_app
+
+        app = create_app(base_dir=tmp_path / "runs")
+        client = TestClient(app)
+        resp = client.get("/diff")
+        # 缺少必填参数 → FastAPI 返回 422 validation error
+        assert resp.status_code == 422
+
+    def test_diff_not_found_shows_error(self, tmp_path):
+        """/diff 的 run_id 不存在时返回错误页。"""
+        from fastapi.testclient import TestClient
+
+        from agentlens.viewer import create_app
+
+        app = create_app(base_dir=tmp_path / "runs")
+        client = TestClient(app)
+        resp = client.get("/diff?left=nonexistent&right=also_fake")
+        assert resp.status_code == 200
+        assert "Run not found" in resp.text
+
+    def test_diff_valid_runs_returns_html(self, tmp_path):
+        """/diff 对存在的 run 返回 200 HTML。"""
+        from fastapi.testclient import TestClient
+
+        from agentlens.viewer import create_app
+
+        store = _make_store_with_events(
+            tmp_path,
+            [
+                TraceEvent(run_id="a", type="run_start", name="same-agent"),
+                TraceEvent(run_id="a", type="log", name="step1"),
+                TraceEvent(run_id="b", type="run_start", name="same-agent"),
+                TraceEvent(run_id="b", type="log", name="step1"),
+            ],
+        )
+        app = create_app(base_dir=store.base_dir)
+        client = TestClient(app)
+        resp = client.get("/diff?left=a&right=b")
+        assert resp.status_code == 200
+        assert "text/html" in resp.headers["content-type"]
+        assert "Run Diff" in resp.text
+        assert "No differences" in resp.text
+
+    def test_diff_page_shows_first_difference(self, tmp_path):
+        """/diff 页面包含 first difference 信息。"""
+        from fastapi.testclient import TestClient
+
+        from agentlens.viewer import create_app
+
+        store = _make_store_with_events(
+            tmp_path,
+            [
+                TraceEvent(run_id="x", type="run_start", name="same-agent"),
+                TraceEvent(run_id="x", type="tool_call", name="search"),
+                TraceEvent(run_id="y", type="run_start", name="same-agent"),
+                TraceEvent(run_id="y", type="llm_call", name="ask"),
+            ],
+        )
+        app = create_app(base_dir=store.base_dir)
+        client = TestClient(app)
+        resp = client.get("/diff?left=x&right=y")
+        assert resp.status_code == 200
+        assert "First difference at step #2" in resp.text
+
+    def test_diff_html_escapes_event_data(self, tmp_path):
+        """/diff 页面对事件数据做 HTML escape 避免 XSS。"""
+        from fastapi.testclient import TestClient
+
+        from agentlens.viewer import create_app
+
+        store = _make_store_with_events(
+            tmp_path,
+            [
+                TraceEvent(
+                    run_id="safe",
+                    type="tool_call",
+                    name="safe",
+                    input={"xss": "<script>alert(1)</script>"},
+                ),
+            ],
+        )
+        app = create_app(base_dir=store.base_dir)
+        client = TestClient(app)
+        resp = client.get("/diff?left=safe&right=safe")
+        assert resp.status_code == 200
+        # 原始 script 标签不应出现在 HTML 中
+        assert "<script>alert(1)</script>" not in resp.text
+        assert "&lt;script&gt;" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# compare_runs 纯函数测试
+# ---------------------------------------------------------------------------
+
+
+class TestCompareRuns:
+    """compare_runs 函数测试。"""
+
+    def test_all_same_for_identical_sequences(self):
+        """两个相同事件序列返回 all same。"""
+        from agentlens.viewer import compare_runs
+
+        events = [
+            {"type": "run_start", "name": "agent"},
+            {"type": "tool_call", "name": "search"},
+        ]
+        result = compare_runs(events, events)
+        assert result["first_diff"] is None
+        assert all(r["status"] == "same" for r in result["rows"])
+
+    def test_changed_for_type_name_diff(self):
+        """type 或 name 不同时返回 changed。"""
+        from agentlens.viewer import compare_runs
+
+        left = [{"type": "run_start", "name": "agent-a"}]
+        right = [{"type": "run_start", "name": "agent-b"}]
+        result = compare_runs(left, right)
+        assert result["rows"][0]["status"] == "changed"
+        assert result["first_diff"] == 0
+
+    def test_missing_right_for_longer_left(self):
+        """左边更长时返回 missing_right。"""
+        from agentlens.viewer import compare_runs
+
+        left = [
+            {"type": "run_start", "name": "a"},
+            {"type": "tool_call", "name": "search"},
+        ]
+        right = [{"type": "run_start", "name": "a"}]
+        result = compare_runs(left, right)
+        assert result["rows"][0]["status"] == "same"
+        assert result["rows"][1]["status"] == "missing_right"
+
+    def test_missing_left_for_longer_right(self):
+        """右边更长时返回 missing_left。"""
+        from agentlens.viewer import compare_runs
+
+        left = [{"type": "run_start", "name": "a"}]
+        right = [
+            {"type": "run_start", "name": "a"},
+            {"type": "tool_call", "name": "search"},
+        ]
+        result = compare_runs(left, right)
+        assert result["rows"][0]["status"] == "same"
+        assert result["rows"][1]["status"] == "missing_left"
