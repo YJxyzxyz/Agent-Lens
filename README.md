@@ -41,6 +41,7 @@ pip install -e ".[dev]"
 ```bash
 pip install -e ".[web]"         # Web Timeline Viewer
 pip install -e ".[deepseek]"    # DeepSeek 自动追踪
+pip install -e ".[langchain]"   # LangChain callback
 ```
 
 AI Agent 越来越复杂。AgentLens 像飞机的黑匣子，以最小侵入的方式记录每一步运行事件。
@@ -73,7 +74,7 @@ agentlens view   # Web 查看器
 - 🤖 **DeepSeek / OpenAI-compatible** 自动追踪
 - 💾 **本地 JSONL 存储**
 - 🖥️ **CLI**（list / show / inspect / diff / view）
-- 🌐 **Web Timeline Viewer**
+- 🌐 **Web Timeline Viewer** — run dashboard, event timeline, visual diff
 
 ## 文档
 
@@ -81,8 +82,9 @@ agentlens view   # Web 查看器
 |------|------|
 | [Quick Start](docs/quickstart.md) | 安装与运行示例 |
 | [DeepSeek 集成](docs/deepseek.md) | DeepSeek / OpenAI-compatible 自动追踪 |
+| [LangChain 集成](docs/langchain.md) | LangChain callback handler |
 | [通用函数追踪](docs/generic-tracing.md) | `@traced` 使用指南 |
-| [Web Viewer](docs/web-viewer.md) | 本地 Web UI 使用说明 |
+| [Web Viewer](docs/web-viewer.md) | 本地 Web UI + Visual Diff |
 | [Changelog](CHANGELOG.md) | 版本更新记录 |
 | [Release Notes](RELEASE_NOTES.md) | v0.1.0-alpha 发布说明 |
 

@@ -60,6 +60,7 @@ dev = [
 openai-compatible = ["openai>=1.0.0"]
 deepseek = ["openai>=1.0.0"]
 web = ["fastapi>=0.110.0", "uvicorn>=0.27.0"]
+langchain = ["langchain-core>=0.2.0"]
 
 [project.scripts]
 agentlens = "agentlens.cli:app"
@@ -80,6 +81,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.per-file-ignores]
 "agentlens/cli.py" = ["B008"]
+"agentlens/viewer.py" = ["E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["agentlens"]

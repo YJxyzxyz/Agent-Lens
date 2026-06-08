@@ -136,7 +136,7 @@ class TestViewerRoutes:
     """FastAPI 路由行为测试。"""
 
     def test_index_returns_html(self, tmp_path):
-        """首页返回 200 且 content-type 为 text/html。"""
+        """首页返回 200 且 content-type 为 text/html，包含核心文案。"""
         from fastapi.testclient import TestClient
 
         from agentlens.viewer import create_app
@@ -146,7 +146,8 @@ class TestViewerRoutes:
         resp = client.get("/")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
-        assert "AgentLens Timeline Viewer" in resp.text
+        assert "AgentLens" in resp.text
+        assert "Local flight recorder" in resp.text
 
     def test_index_no_query_error(self, tmp_path):
         """首页不因缺少 query 参数而返回 JSON error。"""
@@ -159,6 +160,32 @@ class TestViewerRoutes:
         resp = client.get("/")
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
+
+    def test_index_empty_state(self, tmp_path):
+        """首页空状态包含 No runs yet 提示。"""
+        from fastapi.testclient import TestClient
+
+        from agentlens.viewer import create_app
+
+        app = create_app(base_dir=tmp_path / "runs")
+        client = TestClient(app)
+        resp = client.get("/")
+        assert "No runs yet" in resp.text
+
+    def test_index_has_compare_button(self, tmp_path):
+        """首页有 run 列表时包含 Compare selected。"""
+        from fastapi.testclient import TestClient
+
+        from agentlens.viewer import create_app
+
+        store = _make_store_with_events(
+            tmp_path,
+            [TraceEvent(run_id="z", type="run_start", name="test")],
+        )
+        app = create_app(base_dir=store.base_dir)
+        client = TestClient(app)
+        resp = client.get("/")
+        assert "Compare selected" in resp.text
 
     def test_diff_missing_params_shows_error(self, tmp_path):
         """/diff 缺少参数时返回 422 或 HTML 错误页。"""
@@ -185,7 +212,7 @@ class TestViewerRoutes:
         assert "Run not found" in resp.text
 
     def test_diff_valid_runs_returns_html(self, tmp_path):
-        """/diff 对存在的 run 返回 200 HTML。"""
+        """/diff 对存在的 run 返回 200 HTML，含 summary cards。"""
         from fastapi.testclient import TestClient
 
         from agentlens.viewer import create_app
@@ -206,6 +233,8 @@ class TestViewerRoutes:
         assert "text/html" in resp.headers["content-type"]
         assert "Run Diff" in resp.text
         assert "No differences" in resp.text
+        assert "Same" in resp.text
+        assert "Changed" in resp.text
 
     def test_diff_page_shows_first_difference(self, tmp_path):
         """/diff 页面包含 first difference 信息。"""
