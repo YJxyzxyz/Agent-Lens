@@ -71,6 +71,9 @@ agentlens/          # 主包
   storage.py        # JSONL 存储层
   context.py        # 上下文管理
   tracer.py         # 追踪 API
+  summary.py        # 从已有事件推导统计摘要
+  export.py         # JSON / CSV 导出
+  diff.py           # 序列对齐 diff
   cli.py            # CLI 工具
 tests/              # 测试
 examples/           # 示例

@@ -34,7 +34,7 @@ agentlens view --base-dir /path/to/runs
 ## 页面功能
 
 - **首页** — 所有 run 列表，显示名称、时间、事件数、错误状态
-- **详情页** — 事件时间线，按类型着色
+- **详情页** — 事件时间线，按类型着色。顶部显示事件数、错误数、耗时、LLM / 工具次数和 token，数字来自 `agentlens stats` 使用的同一份摘要
 - **展开/折叠** — 点击事件查看 input / output / metadata JSON
 
 ## Visual Diff
@@ -46,12 +46,13 @@ agentlens view --base-dir /path/to/runs
 3. 点击 **Compare selected**
 4. 或直接访问 URL：`http://127.0.0.1:8765/diff?left=<run_id>&right=<run_id>`
 
-Diff 页面显示：
+Diff 页面和 `agentlens diff` 使用同一套比较：
 
-- 左右两侧 run 的事件数
-- 第一个差异位置
-- 逐事件对比表格（相同 / 不同 / 缺失）
-- 点击事件可展开查看 input/output/metadata
+- 先按事件的 type 和 name 做序列对齐。中间多出来的一步不会把后面的事件整段标成不同
+- 再比较 error、input、output。type/name 相同但输入输出不同时，行上会标出字段名
+- 不比较 id、parent_event_id、时间戳和 metadata。耗时和 token 看详情页摘要或 `agentlens stats`
+- 页面仍显示两侧事件数、第一处差异，以及相同 / 不同 / 缺失的计数
+- 明细默认收起。点击一行展开 input/output/metadata，再点一次收起
 
 ## 安全说明
 
