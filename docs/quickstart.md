@@ -74,4 +74,5 @@ docs/                # 文档
 - [通用函数追踪](generic-tracing.md)
 - [统计 / 导出 / diff](stats-export.md)
 - [回放 / 回归](replay.md)
+- [进程内插件](plugins.md)
 - [Web Timeline Viewer](web-viewer.md)

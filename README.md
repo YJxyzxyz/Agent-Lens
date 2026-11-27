@@ -85,6 +85,7 @@ agentlens view            # Web 查看器
 - 📊 **统计摘要与导出** — `stats` / `export` 从已有 JSONL 事件派生文本、JSON、CSV
 - 🔁 **回放与回归** — `replay` / `regression` 从已有 JSONL 回放时间线，并用基线做通过或失败的检查
 - 🌐 **Web Timeline Viewer** — run dashboard, event timeline, stepwise replay, visual diff
+- 🔌 **进程内插件** — 显式 `register_plugin`；事件写入 JSONL 成功后收到只读通知
 
 ## 文档
 
@@ -97,6 +98,7 @@ agentlens view            # Web 查看器
 | [Web Viewer](docs/web-viewer.md) | 本地 Web UI、逐步回放与 Visual Diff |
 | [统计 / 导出 / diff](docs/stats-export.md) | `stats`、JSON/CSV 导出、序列对齐 diff |
 | [回放 / 回归](docs/replay.md) | 从已有 JSONL 回放时间线，并做回归检查 |
+| [进程内插件](docs/plugins.md) | 显式注册；JSONL 写入成功后的只读通知 |
 | [Changelog](CHANGELOG.md) | 版本更新记录 |
 | [Release Notes](RELEASE_NOTES.md) | v0.1.0-alpha 发布说明 |
 
@@ -218,6 +220,23 @@ agentlens regression <baseline> <candidate>
 
 Web Viewer 的逐步查看仍然不把已记录的输出注入真实的模型或工具，也没有跳到某一步或按事件类型过滤。回归仍是扁平序列比较，不看事件树，也不比较 metadata、耗时和 token。所以路线图里 v0.4 的父项先不勾。
 
+## 进程内插件
+
+事件成功追加到 JSONL 之后，可以通知当前进程里显式注册的插件。插件只读这条已经落盘的事件，不写存储，也不重新执行调用。没有插件目录扫描或自动安装。`load_run` 和 `list_runs` 不通知。详见 [进程内插件](docs/plugins.md)。
+
+```python
+from agentlens import register_plugin
+from agentlens.events import TraceEvent
+
+class PrintPlugin:
+    def on_event_appended(self, event: TraceEvent) -> None:
+        print(event.type, event.name)
+
+register_plugin(PrintPlugin())
+```
+
+示例：`python examples/event_log_plugin.py`。
+
 ## 路线图
 
 - [x] **v0.1** — 基础 tracing / JSONL 存储 / CLI / DeepSeek 集成 / Web Timeline Viewer
@@ -234,6 +253,7 @@ Web Viewer 的逐步查看仍然不把已记录的输出注入真实的模型或
   - [x] `agentlens regression`：以一次已记录 run 为基线，候选不一致时退出码为 1
   - [x] Web Viewer 逐步回放：在 run 详情页按记录顺序逐步查看，已看过的步骤留在时间线上，当前步高亮并显示「第 N / 共 M 步」，只有上一步和下一步
 - [ ] **v1.0** — 插件系统 / 性能优化 / 文档站点
+  - [x] 进程内插件第一片：显式 `register_plugin`，JSONL 写入成功后的只读通知
 
 ## 贡献
 

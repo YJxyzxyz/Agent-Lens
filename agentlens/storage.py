@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 from agentlens.events import TraceEvent
+from agentlens.plugins import notify_event_appended
 
 # ---------------------------------------------------------------------------
 # 默认存储路径
@@ -53,12 +54,16 @@ class JsonlTraceStore:
     def append_event(self, event: TraceEvent) -> None:
         """向对应 run 的 JSONL 文件追加一条事件。
 
+        文件写入成功后，才通知已注册的进程内插件。插件异常不会从这里抛出。
+        ``load_run`` 和 ``list_runs`` 不通知。
+
         Args:
             event: 要追加的追踪事件。
         """
         file_path = self._file_path(event.run_id)
         with open(file_path, "a", encoding="utf-8") as f:
             f.write(event.model_dump_json() + "\n")
+        notify_event_appended(event)
 
     def load_run(self, run_id: str) -> list[TraceEvent]:
         """读取一次 run 的全部事件。
