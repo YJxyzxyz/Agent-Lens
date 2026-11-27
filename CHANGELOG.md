@@ -6,6 +6,9 @@ All notable changes to AgentLens will be documented in this file.
 
 ### Features
 
+- **统计摘要** — `agentlens stats [run_id]` 从已有事件汇总次数、错误数、耗时、工具名、token，以及与 `agentlens tree` 相同口径的孤儿数和缺失父事件数。支持 text / JSON / CSV。没有 usage 或 `metadata.tokens` 时，token 是空值而不是 0。`error_count` 只数 `type == "error"`。
+- **JSON/CSV 导出** — `agentlens export <run_id> --format json|csv`。JSON 数组里的每个对象与 JSONL 的一行相同，不新增字段。CSV 增加由 `started_at` / `ended_at` 算出的 `duration_ms`，嵌套的 input、output、metadata 放在单元格里。存储格式仍是 JSONL。
+- **diff 增强** — `agentlens diff` 默认按 `(type, name)` 做序列对齐，再比较 `error`、`input`、`output`，并打印全部差异。`--align index` 仍按记录位置比较。不比较 id、`parent_event_id`、时间戳和 metadata。Web Viewer 的 `/diff` 使用同一套对齐，明细默认收起，点击一行展开或收起。run 详情页展示同一份统计摘要。
 - **事件树** — 事件增加 `parent_event_id`（构造和读取仍接受 `parent_id`）。同一次 run 内，`@trace` / `@traced` 用 contextvar 传递父事件；新的 run 会清空该上下文，不会串到其他 run。JSONL 记下这个字段，父事件可以晚于子事件写入。`agentlens tree <run_id>` 按父子关系缩进打印。父 id 在本次 run 中不存在时，事件和子树留在顶层并标记 `[missing parent: id]`，按缺失 id 分组，最后一行摘要为 `N orphans, M missing parents`。`show` 仍是线性时间线，`view` 仍是 Web 查看器。
 - **Async OpenAI-compatible tracing** — `instrument_openai_compatible` 同时 patch 同步 `Completions.create` 和异步 `AsyncCompletions.create`。`await client.chat.completions.create(...)` 会记录 `llm_call`，异步实现只 await 原始协程，不调用同步方法，也不阻塞事件循环。`instrument_deepseek()` 走同一条路径。
 - **Streaming chat completions** — 同步和异步 `stream=True` 会包装返回的流，在流结束、提前停止或中途失败时写入一条 `llm_call` 或 `error`。记录 `duration_ms`、`ttft_ms`、`usage`（如果响应里有）和 `stream_completed`。

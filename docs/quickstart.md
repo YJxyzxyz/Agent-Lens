@@ -37,6 +37,17 @@ agentlens tree <run_id>
 # 查看完整 JSON
 agentlens inspect <run_id>
 
+# 统计摘要（文本、JSON 或 CSV；不修改 JSONL）
+agentlens stats <run_id>
+agentlens stats --format csv --output stats.csv
+
+# 导出事件。JSON 与 JSONL 的单行对象相同，CSV 多一列 duration_ms
+agentlens export <run_id> --format json --output run.json
+agentlens export <run_id> --format csv --output run.csv
+
+# 对比两次 run。默认按 type/name 对齐，并比较 error、input、output
+agentlens diff <run_a> <run_b>
+
 # 启动 Web 查看器（不是事件树；事件树用上面的 tree）
 pip install -e ".[web]"
 agentlens view
@@ -57,4 +68,5 @@ docs/                # 文档
 - [DeepSeek 集成指南](deepseek.md)
 - [LangChain 集成](langchain.md)
 - [通用函数追踪](generic-tracing.md)
+- [统计 / 导出 / diff](stats-export.md)
 - [Web Timeline Viewer](web-viewer.md)

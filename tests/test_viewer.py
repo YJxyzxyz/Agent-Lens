@@ -235,6 +235,10 @@ class TestViewerRoutes:
         assert "No differences" in resp.text
         assert "Same" in resp.text
         assert "Changed" in resp.text
+        assert "tr.diff-detail { display: none" in resp.text
+        assert "diff-detail open" not in resp.text
+        assert 'id="body-d0"' in resp.text
+        assert "toggleEvent('d0')" in resp.text
 
     def test_diff_page_shows_first_difference(self, tmp_path):
         """/diff 页面包含 first difference 信息。"""
@@ -338,3 +342,51 @@ class TestCompareRuns:
         result = compare_runs(left, right)
         assert result["rows"][0]["status"] == "same"
         assert result["rows"][1]["status"] == "missing_left"
+
+    def test_detail_page_shows_summary_and_escapes_tool_names(self, tmp_path):
+        """详情页展示派生统计，并转义工具名。"""
+        from fastapi.testclient import TestClient
+
+        from agentlens.viewer import create_app
+
+        store = _make_store_with_events(
+            tmp_path,
+            [
+                TraceEvent(run_id="detail", type="run_start", name="demo"),
+                TraceEvent(run_id="detail", type="llm_call", name="model"),
+                TraceEvent(run_id="detail", type="tool_call", name="tool<script>name"),
+            ],
+        )
+        app = create_app(base_dir=store.base_dir)
+        client = TestClient(app)
+        resp = client.get("/run/detail")
+        assert resp.status_code == 200
+        assert "LLM calls" in resp.text
+        assert "Tool calls" in resp.text
+        assert "Tokens" in resp.text
+        assert "tool<script>name" not in resp.text
+        assert "tool&lt;script&gt;name" in resp.text
+
+    def test_diff_page_shows_payload_field_after_alignment(self, tmp_path):
+        """插入的事件不会把后面的同名事件标成整段不同，payload 差异会标出字段。"""
+        from fastapi.testclient import TestClient
+
+        from agentlens.viewer import create_app
+
+        store = _make_store_with_events(
+            tmp_path,
+            [
+                TraceEvent(run_id="left", type="run_start", name="agent"),
+                TraceEvent(run_id="left", type="tool_call", name="search", input={"q": "a"}),
+                TraceEvent(run_id="right", type="run_start", name="agent"),
+                TraceEvent(run_id="right", type="llm_call", name="ask"),
+                TraceEvent(run_id="right", type="tool_call", name="search", input={"q": "b"}),
+            ],
+        )
+        app = create_app(base_dir=store.base_dir)
+        client = TestClient(app)
+        resp = client.get("/diff?left=left&right=right")
+        assert resp.status_code == 200
+        assert "Aligned by type and name" in resp.text
+        assert 'class="diff-fields">input</span>' in resp.text
+        assert "First difference at step #2" in resp.text

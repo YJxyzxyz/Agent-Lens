@@ -66,6 +66,9 @@ main()
 ```bash
 agentlens list && agentlens show <run_id>
 agentlens tree <run_id>   # 按 parent_event_id 缩进的事件树
+agentlens stats <run_id>  # 从已有事件汇总次数、耗时和 token
+agentlens export <run_id> --format csv --output run.csv
+agentlens diff <run_a> <run_b>
 agentlens view            # Web 查看器
 ```
 
@@ -76,7 +79,8 @@ agentlens view            # Web 查看器
 - 💾 **本地 JSONL 存储**
 - 🌳 **事件树** — 事件带 `parent_event_id`，`agentlens tree <run_id>` 按父子关系缩进打印
 - 🔗 **LangChain Callback** — `LangChainCallbackHandler`（`AgentLensCallbackHandler` 的别名）继承 `BaseCallbackHandler`
-- 🖥️ **CLI**（list / show / tree / inspect / diff / view）
+- 🖥️ **CLI**（list / show / tree / inspect / stats / export / diff / view）
+- 📊 **统计摘要与导出** — `stats` / `export` 从已有 JSONL 事件派生文本、JSON、CSV
 - 🌐 **Web Timeline Viewer** — run dashboard, event timeline, visual diff
 
 ## 文档
@@ -88,6 +92,7 @@ agentlens view            # Web 查看器
 | [LangChain 集成](docs/langchain.md) | LangChain callback handler |
 | [通用函数追踪](docs/generic-tracing.md) | `@traced` 使用指南 |
 | [Web Viewer](docs/web-viewer.md) | 本地 Web UI + Visual Diff |
+| [统计 / 导出 / diff](docs/stats-export.md) | `stats`、JSON/CSV 导出、序列对齐 diff |
 | [Changelog](CHANGELOG.md) | 版本更新记录 |
 | [Release Notes](RELEASE_NOTES.md) | v0.1.0-alpha 发布说明 |
 
@@ -172,6 +177,25 @@ pip install -e ".[web]"
 agentlens view
 ```
 
+## 统计、导出和 diff
+
+这三项都只读已经记下的事件，不修改 JSONL，也不增加事件字段。命令和字段说明见 [统计 / 导出 / diff](docs/stats-export.md)。
+
+```bash
+agentlens stats <run_id>
+agentlens stats --format csv --output stats.csv
+agentlens export <run_id> --format json --output run.json
+agentlens export <run_id> --format csv --output run.csv
+agentlens diff <run_a> <run_b>
+agentlens diff <run_a> <run_b> --align index --format json
+```
+
+`stats` 汇总事件次数、错误数、耗时、工具名、token，以及与 `agentlens tree` 相同口径的孤儿数。没有记下的 token 显示为 `-`，不会当成 0。
+
+`export` 的 JSON 是事件对象数组，每个对象与 JSONL 的一行相同。CSV 多一列由起止时间算出的 `duration_ms`。
+
+`diff` 默认按 `(type, name)` 对齐，再比较 `error`、`input`、`output`，并打印全部差异。不比较 id、`parent_event_id`、时间戳和 metadata。Web Viewer 的 `/diff` 使用同一套对齐。
+
 ## 路线图
 
 - [x] **v0.1** — 基础 tracing / JSONL 存储 / CLI / DeepSeek 集成 / Web Timeline Viewer
@@ -179,6 +203,9 @@ agentlens view
 - [x] LangChain Callback — `LangChainCallbackHandler` 继承 `BaseCallbackHandler`；`serialized` 为 `None` 时回退到默认事件名
 - [ ] **v0.2** — 更多 provider 集成
 - [ ] **v0.3** — 统计摘要 / JSON/CSV 导出 / diff 增强
+  - [x] `agentlens stats`：单次 run 与全部 run 的文本 / JSON / CSV 摘要
+  - [x] `agentlens export`：把已有事件导出为 JSON 或 CSV
+  - [x] `agentlens diff`：按 type/name 对齐，比较 error、input、output，并输出全部差异
 - [ ] **v0.4** — Run Replay / 回归测试
 - [ ] **v1.0** — 插件系统 / 性能优化 / 文档站点
 

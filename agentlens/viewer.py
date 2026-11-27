@@ -11,8 +11,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from agentlens.diff import diff_events
 from agentlens.events import TraceEvent
 from agentlens.storage import JsonlTraceStore
+from agentlens.summary import summarize_run, summary_to_dict
 
 # ---------------------------------------------------------------------------
 # 视图逻辑（纯函数，可独立测试）
@@ -48,13 +50,16 @@ def get_run_detail(store: JsonlTraceStore, run_id: str) -> dict[str, Any]:
     """获取单个 run 的详细信息。
 
     Returns:
-        dict with run_id, name, events (list of serialized event dicts).
+        dict with run_id, name, events, and summary。
+        summary 来自已有事件，不改变 JSONL。
     """
     events = store.load_run(run_id)
+    summary = summarize_run(events, run_id=run_id)
     return {
         "run_id": run_id,
-        "name": _extract_run_name(events),
+        "name": summary.name,
         "events": [e.model_dump(mode="json") for e in events],
+        "summary": summary_to_dict(summary),
     }
 
 
@@ -178,6 +183,9 @@ _STYLE = """
   .diff-same td { color: var(--muted); }
   .diff-changed td { background: rgba(210,153,34,0.07); }
   .diff-missing_left td, .diff-missing_right td { background: rgba(88,166,255,0.05); }
+  tr.diff-detail { display: none; }
+  tr.diff-detail.open { display: table-row; }
+  .diff-fields { margin-left: 6px; }
   input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
 </style>
 """
@@ -308,9 +316,13 @@ def _render_index(summaries: list[dict[str, Any]]) -> str:
 </html>"""
 
 
-def _render_detail(run_id: str, name: str, events: list[dict[str, Any]]) -> str:
+def _render_detail(
+    run_id: str,
+    name: str,
+    events: list[dict[str, Any]],
+    summary: dict[str, Any] | None = None,
+) -> str:
     """渲染 run 详情页（timeline 风格）。"""
-    error_count = sum(1 for e in events if e.get("type") == "error")
     event_html = ""
     for i, ev in enumerate(events):
         eid = f"ev{i}"
@@ -365,10 +377,7 @@ def _render_detail(run_id: str, name: str, events: list[dict[str, Any]]) -> str:
     <div class="sub">{html.escape(run_id)}</div>
   </div>
 </div>
-<div class="stats">
-  <div class="stat"><div class="num">{len(events)}</div><div class="label">Events</div></div>
-  <div class="stat"><div class="num" style="color:var(--danger)">{error_count}</div><div class="label">Errors</div></div>
-</div>
+{_detail_stats_html(events, summary)}
 <div class="timeline">
 {event_html}
 </div>
@@ -379,6 +388,50 @@ def _render_detail(run_id: str, name: str, events: list[dict[str, Any]]) -> str:
 {_SCRIPT}
 </body>
 </html>"""
+
+
+def _detail_stats_html(events: list[dict[str, Any]], summary: dict[str, Any] | None) -> str:
+    """详情页顶部的统计条。没有 summary 时退回事件数和错误数。"""
+    if summary is None:
+        error_count = sum(1 for event in events if event.get("type") == "error")
+        cards = _stat_card(len(events), "Events") + _stat_card(
+            error_count, "Errors", "var(--danger)"
+        )
+        return f'<div class="stats">{cards}</div>'
+
+    duration = summary.get("duration_ms")
+    duration_text = "-" if duration is None else f"{duration}ms"
+    tokens = summary.get("total_tokens")
+    token_text = "-" if tokens is None else str(tokens)
+    cards = (
+        _stat_card(summary.get("event_count", len(events)), "Events")
+        + _stat_card(summary.get("error_count", 0), "Errors", "var(--danger)")
+        + _stat_card(duration_text, "Duration")
+        + _stat_card(summary.get("llm_call_count", 0), "LLM calls")
+        + _stat_card(summary.get("tool_call_count", 0), "Tool calls")
+        + _stat_card(token_text, "Tokens")
+    )
+    notes: list[str] = []
+    tool_names = summary.get("tool_names") or []
+    if tool_names:
+        rendered = ", ".join(str(name) for name in tool_names)
+        notes.append(f"Tools: {html.escape(rendered)}")
+    orphan_count = int(summary.get("orphan_count") or 0)
+    missing_parents = int(summary.get("missing_parent_count") or 0)
+    if orphan_count or missing_parents:
+        notes.append(f"{orphan_count} orphans, {missing_parents} missing parents")
+    note_html = f'<p class="meta">{" · ".join(notes)}</p>' if notes else ""
+    return f'<div class="stats">{cards}</div>{note_html}'
+
+
+def _stat_card(value: Any, label: str, color: str | None = None) -> str:
+    style = f' style="color:{color}"' if color else ""
+    return (
+        '<div class="stat">'
+        f'<div class="num"{style}>{html.escape(str(value))}</div>'
+        f'<div class="label">{html.escape(label)}</div>'
+        "</div>"
+    )
 
 
 def _section(title: str, content: str) -> str:
@@ -474,6 +527,10 @@ def compare_runs(
 ) -> dict[str, Any]:
     """对比两个事件序列，返回 diff 行列表和统计信息。
 
+    与 CLI ``agentlens diff`` 使用同一个序列对齐：先按 type/name 对齐，
+    再比较 error、input、output。返回形状仍包含 rows、first_diff、
+    left_count、right_count；每行额外带 fields。
+
     Args:
         left_events: 左侧 run 的事件列表（已序列化为 dict）。
         right_events: 右侧 run 的事件列表。
@@ -481,30 +538,16 @@ def compare_runs(
     Returns:
         dict with rows, first_diff, left_count, right_count.
     """
+    result = diff_events(left_events, right_events, align="sequence")
     rows: list[dict[str, Any]] = []
-    max_len = max(len(left_events), len(right_events))
-    first_diff: int | None = None
-
-    for i in range(max_len):
-        left = left_events[i] if i < len(left_events) else None
-        right = right_events[i] if i < len(right_events) else None
-
-        if left is None:
-            status = "missing_left"
-        elif right is None:
-            status = "missing_right"
-        elif left.get("type") == right.get("type") and left.get("name") == right.get("name"):
-            status = "same"
-        else:
-            status = "changed"
-
-        if status != "same" and first_diff is None:
-            first_diff = i
-
+    for row in result.rows:
+        left = _as_event_dict(row.left)
+        right = _as_event_dict(row.right)
         rows.append(
             {
-                "index": i,
-                "status": status,
+                "index": row.index,
+                "status": row.status,
+                "fields": list(row.fields),
                 "left": _event_summary(left) if left else None,
                 "right": _event_summary(right) if right else None,
             }
@@ -512,10 +555,21 @@ def compare_runs(
 
     return {
         "rows": rows,
-        "first_diff": first_diff,
-        "left_count": len(left_events),
-        "right_count": len(right_events),
+        "first_diff": result.first_diff,
+        "left_count": result.left_count,
+        "right_count": result.right_count,
     }
+
+
+def _as_event_dict(event: Any) -> dict[str, Any] | None:
+    """把 diff 行里的事件还原成 viewer 使用的 dict。"""
+    if event is None:
+        return None
+    if isinstance(event, TraceEvent):
+        return event.model_dump(mode="json")
+    if isinstance(event, dict):
+        return event
+    return None
 
 
 def _render_diff(
@@ -549,6 +603,10 @@ def _render_diff(
             "missing_left": "←",
             "missing_right": "→",
         }.get(status, "?")
+        fields = row.get("fields") or []
+        if fields:
+            rendered_fields = html.escape(", ".join(str(field) for field in fields))
+            status_label += f' &middot; <span class="diff-fields">{rendered_fields}</span>'
 
         eid = f"d{idx}"
         left_detail = _event_detail_html(left, f"{eid}l")
@@ -558,10 +616,10 @@ def _render_diff(
 <tr class="diff-{status}">
   <td>{idx + 1}</td>
   <td>{status_label}</td>
-  <td onclick="toggleEvent('{eid}l')" style="cursor:pointer">{left_text}</td>
-  <td onclick="toggleEvent('{eid}r')" style="cursor:pointer">{right_text}</td>
+  <td onclick="toggleEvent('{eid}')" style="cursor:pointer">{left_text}</td>
+  <td onclick="toggleEvent('{eid}')" style="cursor:pointer">{right_text}</td>
 </tr>
-<tr class="diff-{status}" id="body-{eid}">
+<tr class="diff-{status} diff-detail" id="body-{eid}">
   <td colspan="4" style="padding:4px 14px">
     <div style="display:flex;gap:16px">
       <div style="flex:1">{left_detail}</div>
@@ -607,6 +665,8 @@ def _render_diff(
   <span class="meta"><strong>{first_diff_text}</strong></span>
 </div>
 {summary_cards}
+<p class="meta">Aligned by type and name. Compared fields: type, name, error, input, output.
+Timestamps, ids, parent ids, and metadata are not compared.</p>
 <table class="diff-table">
 <thead><tr>
   <th>#</th><th></th><th>Left</th><th>Right</th>
@@ -671,7 +731,12 @@ def create_app(base_dir: Path | None = None):  # noqa: ANN202
     async def run_detail(run_id: str) -> str:
         store = _store()
         detail = get_run_detail(store, run_id)
-        return _render_detail(detail["run_id"], detail["name"], detail["events"])
+        return _render_detail(
+            detail["run_id"],
+            detail["name"],
+            detail["events"],
+            detail.get("summary"),
+        )
 
     @app.get("/diff", response_class=HTMLResponse)
     async def diff_runs(
