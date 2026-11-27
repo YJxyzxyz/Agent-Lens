@@ -71,7 +71,7 @@ agentlens view   # Web 查看器
 ## 核心功能
 
 - 🎯 **`@trace`** + **`@traced`** 装饰器
-- 🤖 **DeepSeek / OpenAI-compatible** 自动追踪
+- 🤖 **DeepSeek / OpenAI-compatible** 自动追踪（同步与异步 `chat.completions.create`，含 streaming）
 - 💾 **本地 JSONL 存储**
 - 🖥️ **CLI**（list / show / inspect / diff / view）
 - 🌐 **Web Timeline Viewer** — run dashboard, event timeline, visual diff

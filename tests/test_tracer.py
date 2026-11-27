@@ -1,6 +1,8 @@
 """追踪 API 测试 — trace 装饰器与 record_* 函数。"""
 
+import asyncio
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -76,6 +78,61 @@ class TestTraceDecorator:
 
             runs = store.list_runs()
             assert "my-custom-run" in runs
+
+    @pytest.mark.asyncio
+    async def test_async_function_keeps_context_until_await_finishes(self) -> None:
+        """async 函数的 trace 上下文覆盖整个协程，而不是只包住协程对象的创建。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = JsonlTraceStore(base_dir=Path(tmpdir))
+
+            @trace("async-agent", store=store)
+            async def my_func() -> str:
+                await asyncio.sleep(0)
+                record_log("inside-await")
+                return "done"
+
+            await my_func()
+
+            events = store.load_run(store.list_runs()[0])
+            assert [event.type for event in events] == ["run_start", "log", "run_end"]
+            assert events[-1].output["result"] == "done"
+
+    @pytest.mark.asyncio
+    async def test_async_function_records_error(self) -> None:
+        """async 函数抛错时记录 error，并且没有 run_end。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = JsonlTraceStore(base_dir=Path(tmpdir))
+
+            @trace("async-error-agent", store=store)
+            async def failing() -> None:
+                await asyncio.sleep(0)
+                raise ValueError("async boom")
+
+            with pytest.raises(ValueError, match="async boom"):
+                await failing()
+
+            events = store.load_run(store.list_runs()[0])
+            assert events[0].type == "run_start"
+            assert events[-1].type == "error"
+            assert "ValueError" in events[-1].error
+            assert all(event.type != "run_end" for event in events)
+
+    @pytest.mark.asyncio
+    async def test_async_cancellation_is_recorded_and_reraised(self) -> None:
+        """任务被取消时记下 CancelledError，取消本身继续向外抛。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = JsonlTraceStore(base_dir=Path(tmpdir))
+
+            @trace("cancel-agent", store=store)
+            async def cancelled() -> None:
+                raise asyncio.CancelledError()
+
+            with pytest.raises(asyncio.CancelledError):
+                await cancelled()
+
+            events = store.load_run(store.list_runs()[0])
+            assert [event.type for event in events] == ["run_start", "error"]
+            assert "CancelledError" in events[1].error
 
 
 class TestRecordFunctions:
@@ -375,6 +432,60 @@ class TestTracedDecorator:
             tool_events = [e for e in events if e.type == "tool_call"]
             assert len(tool_events) == 1
             assert tool_events[0].name == "implicit_name_fn"
+
+    @pytest.mark.asyncio
+    async def test_async_traced_records_span_inside_async_trace(self) -> None:
+        """async traced 步骤记在 async trace 内，时间跨度覆盖 await。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = JsonlTraceStore(base_dir=Path(tmpdir))
+
+            from agentlens import traced
+
+            @traced("async-search")
+            async def search(query: str) -> dict:
+                await asyncio.sleep(0.02)
+                return {"query": query, "results": 1}
+
+            @trace("async-traced-agent", store=store)
+            async def main() -> None:
+                await search("rag")
+
+            await main()
+
+            events = store.load_run(store.list_runs()[0])
+            tool_events = [event for event in events if event.type == "tool_call"]
+            assert len(tool_events) == 1
+            event = tool_events[0]
+            assert event.name == "async-search"
+            assert event.input["args"] == ["rag"]
+            assert event.output == {"query": "rag", "results": 1}
+            assert event.metadata["duration_ms"] >= 10
+            assert event.ended_at >= event.started_at + timedelta(milliseconds=10)
+
+    def test_record_event_honors_explicit_timestamps(self) -> None:
+        """record_event 使用调用方传入的起止时间。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = JsonlTraceStore(base_dir=Path(tmpdir))
+            from agentlens import record_event
+
+            started = datetime(2026, 1, 1, tzinfo=timezone.utc)
+            ended = datetime(2026, 1, 1, 0, 0, 2, tzinfo=timezone.utc)
+
+            @trace("timestamp-agent", store=store, run_id="run-timestamps")
+            def main() -> None:
+                record_event(
+                    type="log",
+                    name="step",
+                    started_at=started,
+                    ended_at=ended,
+                )
+
+            main()
+
+            events = store.load_run("run-timestamps")
+            log_events = [event for event in events if event.type == "log"]
+            assert log_events[0].started_at == started
+            assert log_events[0].ended_at == ended
 
 
 # ---------------------------------------------------------------------------

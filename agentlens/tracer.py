@@ -8,7 +8,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
+import inspect
 import secrets
 import traceback as tb
 from collections.abc import Callable
@@ -53,6 +55,9 @@ def trace(
 ) -> Callable[[F], F]:
     """追踪装饰器 — 自动记录函数的 run_start / run_end / error 事件。
 
+    同步函数与 ``async def`` 协程函数都可以使用。协程函数会把 trace 上下文保持到
+    ``await`` 结束，因此内部的 ``await client.chat.completions.create(...)`` 能被记录。
+
     用法::
 
         from agentlens import trace
@@ -62,6 +67,12 @@ def trace(
             ...
 
         main()  # 每次调用都会产生一个新的 trace run
+
+        @trace("async-agent")
+        async def amain():
+            ...
+
+        await amain()
 
     Args:
         name: 追踪名称（如 Agent 名称），会记录在事件的 name 字段中。
@@ -73,50 +84,82 @@ def trace(
     """
 
     def decorator(func: F) -> F:
-        @functools.wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
+        def _prepare() -> tuple[JsonlTraceStore, str]:
             _store = store if store is not None else JsonlTraceStore()
             _run_id = run_id if run_id is not None else _generate_run_id()
+            return _store, _run_id
 
-            with set_current_trace(_run_id, _store):
-                # --- run_start ---
-                start_time = datetime.now(timezone.utc)
-                start_event = TraceEvent(
+        def _mark_start(_store: JsonlTraceStore, _run_id: str) -> None:
+            start_time = datetime.now(timezone.utc)
+            _store.append_event(
+                TraceEvent(
                     run_id=_run_id,
                     type="run_start",
                     name=name,
                     started_at=start_time,
                 )
-                _store.append_event(start_event)
+            )
 
-                try:
-                    result = func(*args, **kwargs)
+        def _mark_end(_store: JsonlTraceStore, _run_id: str, result: Any) -> None:
+            end_time = datetime.now(timezone.utc)
+            _store.append_event(
+                TraceEvent(
+                    run_id=_run_id,
+                    type="run_end",
+                    name=name,
+                    started_at=end_time,
+                    ended_at=end_time,
+                    output={"result": str(result)[:200] if result is not None else None},
+                )
+            )
 
-                    # --- run_end ---
-                    end_time = datetime.now(timezone.utc)
-                    end_event = TraceEvent(
-                        run_id=_run_id,
-                        type="run_end",
-                        name=name,
-                        started_at=end_time,
-                        ended_at=end_time,
-                        output={"result": str(result)[:200] if result is not None else None},
-                    )
-                    _store.append_event(end_event)
+        def _mark_error(_store: JsonlTraceStore, _run_id: str, exc: BaseException) -> None:
+            _store.append_event(
+                TraceEvent(
+                    run_id=_run_id,
+                    type="error",
+                    name=name,
+                    error=f"{type(exc).__name__}: {exc}",
+                    metadata={"traceback": tb.format_exc()},
+                )
+            )
 
+        if inspect.iscoroutinefunction(func):
+
+            @functools.wraps(func)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                _store, _run_id = _prepare()
+                with set_current_trace(_run_id, _store):
+                    _mark_start(_store, _run_id)
+                    try:
+                        result = await func(*args, **kwargs)
+                    except asyncio.CancelledError as exc:
+                        try:
+                            _mark_error(_store, _run_id, exc)
+                        except Exception:
+                            pass
+                        raise
+                    except Exception as exc:
+                        _mark_error(_store, _run_id, exc)
+                        raise
+                    _mark_end(_store, _run_id, result)
                     return result
 
+            return async_wrapper  # type: ignore[return-value]
+
+        @functools.wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            _store, _run_id = _prepare()
+
+            with set_current_trace(_run_id, _store):
+                _mark_start(_store, _run_id)
+                try:
+                    result = func(*args, **kwargs)
                 except Exception as exc:
-                    # --- error ---
-                    error_event = TraceEvent(
-                        run_id=_run_id,
-                        type="error",
-                        name=name,
-                        error=f"{type(exc).__name__}: {exc}",
-                        metadata={"traceback": tb.format_exc()},
-                    )
-                    _store.append_event(error_event)
+                    _mark_error(_store, _run_id, exc)
                     raise
+                _mark_end(_store, _run_id, result)
+                return result
 
         return wrapper  # type: ignore[return-value]
 
@@ -136,6 +179,8 @@ def record_event(
     metadata: dict[str, Any] | None = None,
     error: str | None = None,
     parent_id: str | None = None,
+    started_at: datetime | None = None,
+    ended_at: datetime | None = None,
 ) -> TraceEvent:
     """向当前 run 追加一条事件。
 
@@ -147,6 +192,8 @@ def record_event(
         metadata: 附加元数据，可选。
         error: 错误信息，可选。
         parent_id: 父事件 ID，可选。
+        started_at: 事件开始时间，可选。不传则使用当前时间。
+        ended_at: 事件结束时间，可选。不传则使用当前时间。
 
     Returns:
         创建并已存储的 TraceEvent 实例。
@@ -166,8 +213,8 @@ def record_event(
         input=input,
         output=output,
         metadata=metadata or {},
-        started_at=now,
-        ended_at=now,
+        started_at=started_at or now,
+        ended_at=ended_at or now,
         error=error,
     )
     store.append_event(event)
@@ -184,6 +231,8 @@ def record_llm_call(
     input: Any,
     output: Any,
     metadata: dict[str, Any] | None = None,
+    started_at: datetime | None = None,
+    ended_at: datetime | None = None,
 ) -> TraceEvent:
     """记录一次 LLM 调用事件。
 
@@ -192,6 +241,8 @@ def record_llm_call(
         input: 发送给模型的消息或提示。
         output: 模型返回的响应。
         metadata: 附加信息（如 token 用量、延迟等），可选。
+        started_at: 调用开始时间，可选。
+        ended_at: 调用结束时间，可选。
 
     Returns:
         创建的 TraceEvent。
@@ -202,6 +253,8 @@ def record_llm_call(
         input=input,
         output=output,
         metadata=metadata,
+        started_at=started_at,
+        ended_at=ended_at,
     )
 
 
@@ -315,7 +368,7 @@ def traced(
 ) -> Callable[[F], F]:
     """通用函数追踪装饰器 — 将函数调用记录为 Agent 运行中的一步。
 
-    支持 ``@traced`` 和 ``@traced("name")`` 两种用法。
+    支持 ``@traced`` 和 ``@traced("name")`` 两种用法，也支持 ``async def``。
 
     用法::
 
@@ -325,6 +378,10 @@ def traced(
 
         @traced("my-tool", event_type="tool_call")
         def my_tool():
+            ...
+
+        @traced("fetch")
+        async def fetch():
             ...
     """
     # 支持不带括号的 @traced 用法
@@ -352,57 +409,98 @@ def _traced_impl(
     capture_output: bool,
     user_metadata: dict[str, Any] | None,
 ) -> F:
-    """traced 的实际实现。"""
+    """traced 的实际实现。同步函数与协程函数共用同一套记录逻辑。"""
+
+    def _safe_input(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any | None:
+        if not capture_input:
+            return None
+        return safe_serialize({"args": list(args), "kwargs": dict(kwargs)})
+
+    def _metadata(started_at: datetime, ended_at: datetime) -> dict[str, Any]:
+        event_meta = user_metadata.copy() if user_metadata else {}
+        event_meta["duration_ms"] = max(0, int((ended_at - started_at).total_seconds() * 1000))
+        return event_meta
+
+    def _record_success(
+        safe_input: Any | None,
+        result: Any,
+        started_at: datetime,
+        ended_at: datetime,
+    ) -> None:
+        safe_output = safe_serialize(result) if capture_output else None
+        record_event(
+            type=event_type,
+            name=event_name,
+            input=safe_input,
+            output=safe_output,
+            metadata=_metadata(started_at, ended_at),
+            started_at=started_at,
+            ended_at=ended_at,
+        )
+
+    def _record_failure(
+        safe_input: Any | None,
+        exc: BaseException,
+        started_at: datetime,
+        ended_at: datetime,
+    ) -> None:
+        record_event(
+            type="error",
+            name=event_name,
+            input=safe_input,
+            error=f"{type(exc).__name__}: {exc}",
+            metadata=_metadata(started_at, ended_at),
+            started_at=started_at,
+            ended_at=ended_at,
+        )
+
+    if inspect.iscoroutinefunction(func):
+
+        @functools.wraps(func)
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            if get_current_run_id() is None:
+                return await func(*args, **kwargs)
+
+            safe_input = _safe_input(args, kwargs)
+            started_at = datetime.now(timezone.utc)
+            try:
+                result = await func(*args, **kwargs)
+            except asyncio.CancelledError as exc:
+                ended_at = datetime.now(timezone.utc)
+                try:
+                    _record_failure(safe_input, exc, started_at, ended_at)
+                except Exception:
+                    pass
+                raise
+            except Exception as exc:
+                ended_at = datetime.now(timezone.utc)
+                _record_failure(safe_input, exc, started_at, ended_at)
+                raise
+
+            ended_at = datetime.now(timezone.utc)
+            _record_success(safe_input, result, started_at, ended_at)
+            return result
+
+        return async_wrapper  # type: ignore[return-value]
 
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         # 没有 trace 上下文 → 直接执行，不记录
-        run_id = get_current_run_id()
-        if run_id is None:
+        if get_current_run_id() is None:
             return func(*args, **kwargs)
 
-        # 序列化 input
-        safe_input: dict[str, Any] | None = None
-        if capture_input:
-            raw_input = {"args": list(args), "kwargs": dict(kwargs)}
-            safe_input = safe_serialize(raw_input)
-
+        safe_input = _safe_input(args, kwargs)
         started_at = datetime.now(timezone.utc)
 
         try:
             result = func(*args, **kwargs)
         except Exception as exc:
             ended_at = datetime.now(timezone.utc)
-            duration_ms = int((ended_at - started_at).total_seconds() * 1000)
-            error_meta = user_metadata.copy() if user_metadata else {}
-            error_meta["duration_ms"] = duration_ms
-            record_event(
-                type="error",
-                name=event_name,
-                input=safe_input,
-                error=f"{type(exc).__name__}: {exc}",
-                metadata=error_meta,
-            )
+            _record_failure(safe_input, exc, started_at, ended_at)
             raise
 
         ended_at = datetime.now(timezone.utc)
-        duration_ms = int((ended_at - started_at).total_seconds() * 1000)
-
-        safe_output: Any | None = None
-        if capture_output:
-            safe_output = safe_serialize(result)
-
-        event_meta = user_metadata.copy() if user_metadata else {}
-        event_meta["duration_ms"] = duration_ms
-
-        record_event(
-            type=event_type,
-            name=event_name,
-            input=safe_input,
-            output=safe_output,
-            metadata=event_meta,
-        )
-
+        _record_success(safe_input, result, started_at, ended_at)
         return result
 
     return wrapper  # type: ignore[return-value]
