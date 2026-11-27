@@ -111,4 +111,4 @@ result = diff_events(left_events, right_events, align="sequence")
 
 - 不比较 metadata，也不把耗时或 token 的数值差写进 diff。
 - 没有图表，没有独立的统计页面，也没有 HTML 导出。
-- 不回放 run，也不做回归测试。那是 v0.4。
+- 回放和回归检查见 [回放 / 回归](replay.md)。`diff` 有差异时仍然退出 0。

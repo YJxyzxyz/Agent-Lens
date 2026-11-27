@@ -1,9 +1,11 @@
 """AgentLens CLI — 基于 Typer 的命令行工具。
 
-提供 list / show / tree / inspect / stats / export / diff / view 子命令。
-``show`` 是线性时间线，``tree`` 是按 parent_event_id 缩进的事件树，
+提供 list / show / tree / inspect / stats / export / diff / replay / regression / view
+子命令。``show`` 是线性时间线，``tree`` 是按 parent_event_id 缩进的事件树，
 ``stats`` 和 ``export`` 从已有事件派生摘要与 JSON/CSV，
-``diff`` 对齐两次 run 并打印全部差异，``view`` 启动本地 Web 查看器。
+``diff`` 对齐两次 run 并打印全部差异，
+``replay`` 按记录顺序回放一次 run，``regression`` 用基线判断候选是否通过，
+``view`` 启动本地 Web 查看器。
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ from rich.table import Table
 from agentlens.diff import diff_events, diff_to_json, format_diff
 from agentlens.events import TraceEvent
 from agentlens.export import export_events
+from agentlens.regression import check_regression, format_regression, regression_to_json
+from agentlens.replay import format_replay, replay_run, replay_to_json
 from agentlens.storage import JsonlTraceStore
 from agentlens.summary import (
     format_run_summary,
@@ -383,6 +387,121 @@ def diff_runs(
     else:
         text = format_diff(result, left_run_id=run_a, right_run_id=run_b)
     _emit(text, output)
+
+
+# ---------------------------------------------------------------------------
+# replay 命令
+# ---------------------------------------------------------------------------
+
+
+@app.command("replay")
+def replay(
+    run_id: str = typer.Argument(..., help="要回放的 run_id"),
+    base_dir: Path | None = typer.Option(
+        None,
+        "--base-dir",
+        "-d",
+        help="存储根目录，默认 .agentlens/runs/",
+    ),
+    calls_only: bool = typer.Option(
+        False,
+        "--calls",
+        help="只回放 llm、tool、file、browser 调用",
+    ),
+    fmt: str = typer.Option(
+        "text",
+        "--format",
+        "-f",
+        help="输出格式：text 或 json",
+    ),
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="写入文件；省略则打印到标准输出",
+    ),
+) -> None:
+    """按记录顺序回放一次 run。只读 JSONL，不重新执行。"""
+    _reject_bad_choice(fmt, {"text", "json"}, "格式")
+    store = _get_store(base_dir)
+    events = _load_or_exit(store, run_id)
+    recorded = replay_run(events, run_id=run_id)
+    if fmt == "json":
+        text = replay_to_json(recorded, calls_only=calls_only)
+    else:
+        text = format_replay(recorded, calls_only=calls_only)
+    _emit(text, output)
+
+
+# ---------------------------------------------------------------------------
+# regression 命令
+# ---------------------------------------------------------------------------
+
+
+@app.command("regression")
+def regression(
+    baseline: str = typer.Argument(..., help="基线 run_id"),
+    candidate: str = typer.Argument(..., help="候选 run_id"),
+    base_dir: Path | None = typer.Option(
+        None,
+        "--base-dir",
+        "-d",
+        help="存储根目录，默认 .agentlens/runs/",
+    ),
+    align: str = typer.Option(
+        "sequence",
+        "--align",
+        help="sequence 按 type/name 对齐；index 按记录位置对齐",
+    ),
+    calls_only: bool = typer.Option(
+        False,
+        "--calls",
+        help="只比较 llm、tool、file、browser 调用",
+    ),
+    fmt: str = typer.Option(
+        "text",
+        "--format",
+        "-f",
+        help="输出格式：text 或 json",
+    ),
+    output: Path | None = typer.Option(
+        None,
+        "--output",
+        "-o",
+        help="写入文件；省略则打印到标准输出",
+    ),
+) -> None:
+    """用基线 run 检查候选。不一致时退出码为 1。不重新执行。"""
+    _reject_bad_choice(align, {"sequence", "index"}, "对齐方式")
+    _reject_bad_choice(fmt, {"text", "json"}, "格式")
+    store = _get_store(base_dir)
+    baseline_events = _load_or_exit(store, baseline)
+    candidate_events = _load_or_exit(store, candidate)
+    if align == "index":
+        result = check_regression(
+            baseline_events,
+            candidate_events,
+            align="index",
+            baseline_run_id=baseline,
+            candidate_run_id=candidate,
+            calls_only=calls_only,
+        )
+    else:
+        result = check_regression(
+            baseline_events,
+            candidate_events,
+            align="sequence",
+            baseline_run_id=baseline,
+            candidate_run_id=candidate,
+            calls_only=calls_only,
+        )
+    if fmt == "json":
+        text = regression_to_json(result)
+    else:
+        text = format_regression(result)
+    _emit(text, output)
+    if not result.passed:
+        raise typer.Exit(code=1)
 
 
 # ---------------------------------------------------------------------------

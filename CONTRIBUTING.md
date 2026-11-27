@@ -74,6 +74,8 @@ agentlens/          # 主包
   summary.py        # 从已有事件推导统计摘要
   export.py         # JSON / CSV 导出
   diff.py           # 序列对齐 diff
+  replay.py         # 从已有事件回放时间线
+  regression.py     # 用基线 run 做回归检查
   cli.py            # CLI 工具
 tests/              # 测试
 examples/           # 示例

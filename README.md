@@ -69,6 +69,8 @@ agentlens tree <run_id>   # 按 parent_event_id 缩进的事件树
 agentlens stats <run_id>  # 从已有事件汇总次数、耗时和 token
 agentlens export <run_id> --format csv --output run.csv
 agentlens diff <run_a> <run_b>
+agentlens replay <run_id>
+agentlens regression <baseline> <candidate>
 agentlens view            # Web 查看器
 ```
 
@@ -79,8 +81,9 @@ agentlens view            # Web 查看器
 - 💾 **本地 JSONL 存储**
 - 🌳 **事件树** — 事件带 `parent_event_id`，`agentlens tree <run_id>` 按父子关系缩进打印
 - 🔗 **LangChain Callback** — `LangChainCallbackHandler`（`AgentLensCallbackHandler` 的别名）继承 `BaseCallbackHandler`
-- 🖥️ **CLI**（list / show / tree / inspect / stats / export / diff / view）
+- 🖥️ **CLI**（list / show / tree / inspect / stats / export / diff / replay / regression / view）
 - 📊 **统计摘要与导出** — `stats` / `export` 从已有 JSONL 事件派生文本、JSON、CSV
+- 🔁 **回放与回归** — `replay` / `regression` 从已有 JSONL 回放时间线，并用基线做通过或失败的检查
 - 🌐 **Web Timeline Viewer** — run dashboard, event timeline, visual diff
 
 ## 文档
@@ -93,6 +96,7 @@ agentlens view            # Web 查看器
 | [通用函数追踪](docs/generic-tracing.md) | `@traced` 使用指南 |
 | [Web Viewer](docs/web-viewer.md) | 本地 Web UI + Visual Diff |
 | [统计 / 导出 / diff](docs/stats-export.md) | `stats`、JSON/CSV 导出、序列对齐 diff |
+| [回放 / 回归](docs/replay.md) | 从已有 JSONL 回放时间线，并做回归检查 |
 | [Changelog](CHANGELOG.md) | 版本更新记录 |
 | [Release Notes](RELEASE_NOTES.md) | v0.1.0-alpha 发布说明 |
 
@@ -194,7 +198,23 @@ agentlens diff <run_a> <run_b> --align index --format json
 
 `export` 的 JSON 是事件对象数组，每个对象与 JSONL 的一行相同。CSV 多一列由起止时间算出的 `duration_ms`。
 
-`diff` 默认按 `(type, name)` 对齐，再比较 `error`、`input`、`output`，并打印全部差异。不比较 id、`parent_event_id`、时间戳和 metadata。Web Viewer 的 `/diff` 使用同一套对齐。
+`diff` 默认按 `(type, name)` 对齐，再比较 `error`、`input`、`output`，并打印全部差异。不比较 id、`parent_event_id`、时间戳和 metadata。Web Viewer 的 `/diff` 使用同一套对齐。有差异时 `diff` 仍退出 0。
+
+## 回放和回归
+
+这两项只读已经记下的事件，不修改 JSONL，也不增加事件字段。它们不重新执行 LLM 或工具调用。命令和字段说明见 [回放 / 回归](docs/replay.md)。
+
+```bash
+agentlens replay <run_id>
+agentlens replay <run_id> --calls --format json
+agentlens regression <baseline> <candidate>
+```
+
+`replay` 按 JSONL 的记录顺序回放每一步的 type、name、input、output、error。父事件缺失的步骤仍留在原位置。`recorded_calls` 从同一次记录里按顺序取出 llm、tool、file、browser 的已记录结果。
+
+`regression` 把基线 run 当作回归标准，比较字段和 `diff` 相同。一致时退出码 0，不一致时退出码 1。
+
+这一版没有 Web Viewer 里的逐步回放，也不把已记录的输出注入真实的模型或工具。回归仍是扁平序列比较，不看事件树，也不比较 metadata、耗时和 token。所以路线图里 v0.4 的父项先不勾。
 
 ## 路线图
 
@@ -207,6 +227,9 @@ agentlens diff <run_a> <run_b> --align index --format json
   - [x] `agentlens export`：把已有事件导出为 JSON 或 CSV
   - [x] `agentlens diff`：按 type/name 对齐，比较 error、input、output，并输出全部差异
 - [ ] **v0.4** — Run Replay / 回归测试
+  - [x] `agentlens replay`：按记录顺序回放已有 JSONL 的 type、name、input、output、error
+  - [x] `recorded_calls`：按记录顺序取出 llm / tool / file / browser 的已记录结果
+  - [x] `agentlens regression`：以一次已记录 run 为基线，候选不一致时退出码为 1
 - [ ] **v1.0** — 插件系统 / 性能优化 / 文档站点
 
 ## 贡献

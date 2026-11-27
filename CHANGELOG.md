@@ -6,6 +6,8 @@ All notable changes to AgentLens will be documented in this file.
 
 ### Features
 
+- **Run Replay** — `agentlens replay <run_id>` 按 JSONL 记录顺序回放 type、name、input、output、error。`duration_ms` 由该步起止时间派生，只用于展示。`recorded_calls` 按同一顺序取出 llm / tool / file / browser 的已记录结果；下一条对不上时不前进。不重新执行调用，也不改 JSONL。
+- **回归检查** — `agentlens regression <baseline> <candidate>` 用已记录的基线检查候选。比较方式与 `diff` 相同：默认按 `(type, name)` 做扁平序列对齐，再比较 `error`、`input`、`output`。一致时退出码 0，不一致时退出码 1。`diff` 有差异时仍然退出 0。`--calls` 只比较上述调用。不比较 id、`parent_event_id`、时间戳、metadata，也不做树形 diff。
 - **统计摘要** — `agentlens stats [run_id]` 从已有事件汇总次数、错误数、耗时、工具名、token，以及与 `agentlens tree` 相同口径的孤儿数和缺失父事件数。支持 text / JSON / CSV。没有 usage 或 `metadata.tokens` 时，token 是空值而不是 0。`error_count` 只数 `type == "error"`。
 - **JSON/CSV 导出** — `agentlens export <run_id> --format json|csv`。JSON 数组里的每个对象与 JSONL 的一行相同，不新增字段。CSV 增加由 `started_at` / `ended_at` 算出的 `duration_ms`，嵌套的 input、output、metadata 放在单元格里。存储格式仍是 JSONL。
 - **diff 增强** — `agentlens diff` 默认按 `(type, name)` 做序列对齐，再比较 `error`、`input`、`output`，并打印全部差异。`--align index` 仍按记录位置比较。不比较 id、`parent_event_id`、时间戳和 metadata。Web Viewer 的 `/diff` 使用同一套对齐，明细默认收起，点击一行展开或收起。run 详情页展示同一份统计摘要。
@@ -16,7 +18,7 @@ All notable changes to AgentLens will be documented in this file.
 - OpenAI-compatible 事件额外记录请求模型与 `response_model`，以及脱敏后的 endpoint（只有 host 和 path）。助手消息里的 tool call 只保留 id 和 name，`arguments` 写成 `[REDACTED]`。
 - **LangChain callback** — `AgentLensCallbackHandler` 在安装了 `langchain-core` 时继承 `BaseCallbackHandler`；未安装时退化为普通对象，模块仍可导入，实例化会提示安装依赖。`LangChainCallbackHandler` 是同一个类的别名。`serialized` 为 `None`（例如 `RunnableLambda`）时不再抛出 `AttributeError`，事件名回退为 `langchain.llm`、`langchain.chain`、`langchain.tool`。
 
-0.1.0 里「暂不支持异步追踪」的限制，对 `@trace` / `@traced` 和 OpenAI-compatible `chat.completions.create` 不再成立。其他异步入口（例如 `with_streaming_response`）还没有覆盖。0.1.0-alpha 的 “No LangChain or other framework integrations yet” 对 LangChain callback 不再成立。
+0.1.0 里「暂不支持异步追踪」的限制，对 `@trace` / `@traced` 和 OpenAI-compatible `chat.completions.create` 不再成立。其他异步入口（例如 `with_streaming_response`）还没有覆盖。0.1.0-alpha 的 “No LangChain or other framework integrations yet” 对 LangChain callback 不再成立。0.1.0-alpha 的 “Run replay is not implemented yet”，对从已有 JSONL 回放时间线并用基线做回归检查不再成立。重新执行已记录的 LLM 或工具调用，以及 Web Viewer 里的逐步回放，还没有做。
 
 ## 0.1.0-alpha
 

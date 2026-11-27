@@ -6,6 +6,16 @@
 from agentlens.diff import diff_events
 from agentlens.events import TraceEvent
 from agentlens.export import events_to_csv, events_to_json
+from agentlens.regression import RegressionResult, check_regression
+from agentlens.replay import (
+    REPLAY_CALL_TYPES,
+    RecordedCalls,
+    ReplayError,
+    ReplayStep,
+    RunReplay,
+    recorded_calls,
+    replay_run,
+)
 from agentlens.storage import JsonlTraceStore
 from agentlens.summary import RunSummary, summarize_run
 from agentlens.tracer import (
@@ -35,6 +45,15 @@ __all__ = [
     "events_to_json",
     "events_to_csv",
     "diff_events",
+    "replay_run",
+    "RunReplay",
+    "ReplayStep",
+    "ReplayError",
+    "REPLAY_CALL_TYPES",
+    "recorded_calls",
+    "RecordedCalls",
+    "check_regression",
+    "RegressionResult",
 ]
 
 __version__ = "0.1.0"
