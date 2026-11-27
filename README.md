@@ -84,7 +84,7 @@ agentlens view            # Web 查看器
 - 🖥️ **CLI**（list / show / tree / inspect / stats / export / diff / replay / regression / view）
 - 📊 **统计摘要与导出** — `stats` / `export` 从已有 JSONL 事件派生文本、JSON、CSV
 - 🔁 **回放与回归** — `replay` / `regression` 从已有 JSONL 回放时间线，并用基线做通过或失败的检查
-- 🌐 **Web Timeline Viewer** — run dashboard, event timeline, visual diff
+- 🌐 **Web Timeline Viewer** — run dashboard, event timeline, stepwise replay, visual diff
 
 ## 文档
 
@@ -94,7 +94,7 @@ agentlens view            # Web 查看器
 | [DeepSeek 集成](docs/deepseek.md) | DeepSeek / OpenAI-compatible 自动追踪 |
 | [LangChain 集成](docs/langchain.md) | LangChain callback handler |
 | [通用函数追踪](docs/generic-tracing.md) | `@traced` 使用指南 |
-| [Web Viewer](docs/web-viewer.md) | 本地 Web UI + Visual Diff |
+| [Web Viewer](docs/web-viewer.md) | 本地 Web UI、逐步回放与 Visual Diff |
 | [统计 / 导出 / diff](docs/stats-export.md) | `stats`、JSON/CSV 导出、序列对齐 diff |
 | [回放 / 回归](docs/replay.md) | 从已有 JSONL 回放时间线，并做回归检查 |
 | [Changelog](CHANGELOG.md) | 版本更新记录 |
@@ -181,6 +181,8 @@ pip install -e ".[web]"
 agentlens view
 ```
 
+打开一次 run 的详情页可以看到全部事件。**Next step** 从第一条开始逐步查看，**Previous step** 把高亮移回上一条。逐步查看仍在这个详情页上。已经看过的事件按 JSONL 原顺序留在时间线上，当前一步用边框高亮，旁边的计数是「第 N / 共 M 步」。没有单独的「当前」标记。不重新执行已记录的调用。
+
 ## 统计、导出和 diff
 
 这三项都只读已经记下的事件，不修改 JSONL，也不增加事件字段。命令和字段说明见 [统计 / 导出 / diff](docs/stats-export.md)。
@@ -210,11 +212,11 @@ agentlens replay <run_id> --calls --format json
 agentlens regression <baseline> <candidate>
 ```
 
-`replay` 按 JSONL 的记录顺序回放每一步的 type、name、input、output、error。父事件缺失的步骤仍留在原位置。`recorded_calls` 从同一次记录里按顺序取出 llm、tool、file、browser 的已记录结果。
+`replay` 按 JSONL 的记录顺序回放每一步的 type、name、input、output、error。父事件缺失的步骤仍留在原位置。`recorded_calls` 从同一次记录里按顺序取出 llm、tool、file、browser 的已记录结果。Web Viewer 的 run 详情页用同样的顺序逐步显示：已经看过的步骤留在时间线上，当前步高亮，计数为「第 N / 共 M 步」。
 
 `regression` 把基线 run 当作回归标准，比较字段和 `diff` 相同。一致时退出码 0，不一致时退出码 1。
 
-这一版没有 Web Viewer 里的逐步回放，也不把已记录的输出注入真实的模型或工具。回归仍是扁平序列比较，不看事件树，也不比较 metadata、耗时和 token。所以路线图里 v0.4 的父项先不勾。
+Web Viewer 的逐步查看仍然不把已记录的输出注入真实的模型或工具，也没有跳到某一步或按事件类型过滤。回归仍是扁平序列比较，不看事件树，也不比较 metadata、耗时和 token。所以路线图里 v0.4 的父项先不勾。
 
 ## 路线图
 
@@ -230,6 +232,7 @@ agentlens regression <baseline> <candidate>
   - [x] `agentlens replay`：按记录顺序回放已有 JSONL 的 type、name、input、output、error
   - [x] `recorded_calls`：按记录顺序取出 llm / tool / file / browser 的已记录结果
   - [x] `agentlens regression`：以一次已记录 run 为基线，候选不一致时退出码为 1
+  - [x] Web Viewer 逐步回放：在 run 详情页按记录顺序逐步查看，已看过的步骤留在时间线上，当前步高亮并显示「第 N / 共 M 步」，只有上一步和下一步
 - [ ] **v1.0** — 插件系统 / 性能优化 / 文档站点
 
 ## 贡献
