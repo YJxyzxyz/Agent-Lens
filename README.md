@@ -65,7 +65,8 @@ main()
 
 ```bash
 agentlens list && agentlens show <run_id>
-agentlens view   # Web 查看器
+agentlens tree <run_id>   # 按 parent_event_id 缩进的事件树
+agentlens view            # Web 查看器
 ```
 
 ## 核心功能
@@ -73,7 +74,8 @@ agentlens view   # Web 查看器
 - 🎯 **`@trace`** + **`@traced`** 装饰器
 - 🤖 **DeepSeek / OpenAI-compatible** 自动追踪（同步与异步 `chat.completions.create`，含 streaming）
 - 💾 **本地 JSONL 存储**
-- 🖥️ **CLI**（list / show / inspect / diff / view）
+- 🌳 **事件树** — 事件带 `parent_event_id`，`agentlens tree <run_id>` 按父子关系缩进打印
+- 🖥️ **CLI**（list / show / tree / inspect / diff / view）
 - 🌐 **Web Timeline Viewer** — run dashboard, event timeline, visual diff
 
 ## 文档
@@ -87,6 +89,35 @@ agentlens view   # Web 查看器
 | [Web Viewer](docs/web-viewer.md) | 本地 Web UI + Visual Diff |
 | [Changelog](CHANGELOG.md) | 版本更新记录 |
 | [Release Notes](RELEASE_NOTES.md) | v0.1.0-alpha 发布说明 |
+
+## 事件树
+
+每条事件都有 `parent_event_id`，指向同一次 run 里的父事件。根事件（例如 `run_start`）是 `null`。这个字段写在该 run 的 JSONL 里，之后可以按 id 把树还原出来，不依赖父事件一定写在子事件前面。
+
+父子关系只在当前 run 内用 `contextvars` 传递：
+
+- `@trace` 写入 `run_start` 之后，把该事件设为当前父事件。这次 run 里直接记录的事件，包括 `run_end`、错误，以及没有包在 `@traced` 里的 `record_*`，都以它为父事件。
+- `@traced` 在函数执行期间把自身的事件 id 设为当前父事件，函数内部再记录的事件成为它的子事件。函数结束后恢复原来的父事件。
+- 开始一次新的 `@trace` 会清空父事件上下文。外层 run 的父事件不会进到另一次 run。
+- `record_event(..., parent_event_id=...)` 可以显式指定父事件。传入 `None` 表示这条事件是根。不传则使用当前上下文。`parent_id` 仍可用，含义相同。
+
+OpenAI-compatible / DeepSeek 自动追踪在**调用开始时**捕获当时的父事件。流式响应即使等到 trace 上下文结束后才读完，仍然挂在发起调用时的父事件上，不会改挂到之后的 run。
+
+```bash
+agentlens tree <run_id>
+agentlens tree <run_id> --base-dir /path/to/runs
+```
+
+`tree` 不是 `view`，也不会给 `show` 增加 `--tree`。`show` 仍按记录顺序打印线性时间线，`view` 仍启动本地 Web 查看器。
+
+缺失父事件时命令不丢事件，也不失败：
+
+- `parent_event_id` 为空的事件是正常的根，打印在树的前面。
+- `parent_event_id` 在这次 run 里不存在时，该事件和它的子树打印在顶层，事件行末尾标记 `[missing parent: id]`。
+- 同一个缺失父 id 的事件分在一组，不同的缺失父 id 各自成组，组之间空一行。
+- 子树里父事件还在的后代继续缩进在该事件下面，不再重复标记。
+- 树的最后一行是摘要：`N orphans, M missing parents`。`N` 是孤儿事件数（不含它下面父事件仍在的后代），`M` 是不同缺失父 id 的数量。
+- 一棵完整的树没有 `[missing parent: ...]`，摘要是 `0 orphans, 0 missing parents`。
 
 ## 事件类型
 
@@ -122,7 +153,8 @@ agentlens view
 ## 路线图
 
 - [x] **v0.1** — 基础 tracing / JSONL 存储 / CLI / DeepSeek 集成 / Web Timeline Viewer
-- [ ] **v0.2** — LangChain Callback / 事件树形关联 / 更多 provider 集成
+- [x] 事件树 — `parent_event_id`、run 内 contextvar、`agentlens tree`
+- [ ] **v0.2** — LangChain Callback / 更多 provider 集成
 - [ ] **v0.3** — 统计摘要 / JSON/CSV 导出 / diff 增强
 - [ ] **v0.4** — Run Replay / 回归测试
 - [ ] **v1.0** — 插件系统 / 性能优化 / 文档站点

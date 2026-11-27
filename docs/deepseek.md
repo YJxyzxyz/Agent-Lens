@@ -80,6 +80,7 @@ asyncio.run(main())
 - **metadata** — provider、api 名称、请求模型 `model`、响应模型 `response_model`、耗时 `duration_ms`
 - **endpoint** — 只记录 `base_url` 的 host 和 path。用户名、密码和 query（例如 `api_key`）不会写入 trace
 - **tool_calls** — 只记录 id 和 name，`arguments` 固定写成 `[REDACTED]`
+- **parent_event_id** — 调用开始时，当前 run 的父事件。流式响应即使在上下文结束后才读完，仍使用这个当时捕获的值，不会改挂到别的 run
 
 ## 安全
 
