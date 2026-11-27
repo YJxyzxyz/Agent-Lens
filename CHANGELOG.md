@@ -6,6 +6,7 @@ All notable changes to AgentLens will be documented in this file.
 
 ### Features
 
+- **进程内插件** — `register_plugin` 显式注册当前进程里的 Python 对象。事件经 `JsonlTraceStore.append_event` 写入 JSONL 之后，`on_event_appended` 收到该事件的只读副本。`load_run` / `list_runs` 不通知。插件异常不影响写入和 `@trace`。不扫描入口，也不自动安装。
 - **Run Replay** — `agentlens replay <run_id>` 按 JSONL 记录顺序回放 type、name、input、output、error。`duration_ms` 由该步起止时间派生，只用于展示。`recorded_calls` 按同一顺序取出 llm / tool / file / browser 的已记录结果；下一条对不上时不前进。不重新执行调用，也不改 JSONL。
 - **Web Viewer 逐步回放** — run 详情页用 Previous step / Next step 逐步查看已记录事件。已经看过的事件按 `agentlens replay` 的 JSONL 原顺序留在时间线上，当前步高亮，计数为「第 N / 共 M 步」，没有单独的「当前」标记。父事件缺失或乱序写入仍留在原位置。不新开页面，不重新执行调用，不改 JSONL。没有跳到指定步骤，也没有按事件类型过滤。
 - **回归检查** — `agentlens regression <baseline> <candidate>` 用已记录的基线检查候选。比较方式与 `diff` 相同：默认按 `(type, name)` 做扁平序列对齐，再比较 `error`、`input`、`output`。一致时退出码 0，不一致时退出码 1。`diff` 有差异时仍然退出 0。`--calls` 只比较上述调用。不比较 id、`parent_event_id`、时间戳、metadata，也不做树形 diff。

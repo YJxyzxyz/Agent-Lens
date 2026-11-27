@@ -69,6 +69,7 @@ mypy agentlens
 agentlens/          # 主包
   events.py         # Pydantic 事件模型
   storage.py        # JSONL 存储层
+  plugins.py        # 进程内插件：显式注册，写入 JSONL 后只读通知
   context.py        # 上下文管理
   tracer.py         # 追踪 API
   summary.py        # 从已有事件推导统计摘要

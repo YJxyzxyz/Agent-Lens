@@ -6,6 +6,7 @@
 from agentlens.diff import diff_events
 from agentlens.events import TraceEvent
 from agentlens.export import events_to_csv, events_to_json
+from agentlens.plugins import TracePlugin, register_plugin
 from agentlens.regression import RegressionResult, check_regression
 from agentlens.replay import (
     REPLAY_CALL_TYPES,
@@ -54,6 +55,8 @@ __all__ = [
     "RecordedCalls",
     "check_regression",
     "RegressionResult",
+    "register_plugin",
+    "TracePlugin",
 ]
 
 __version__ = "0.1.0"
