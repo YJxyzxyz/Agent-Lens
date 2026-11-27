@@ -2,45 +2,82 @@
 
 通过 LangChain callback 自动将 chain / LLM / tool 事件记录到 AgentLens trace run。
 
+``AgentLensCallbackHandler`` 在安装了 ``langchain-core`` 时继承
+``BaseCallbackHandler``，可以直接放进 Runnable 的 ``callbacks``。
+未安装 ``langchain-core`` 时退化为普通对象，导入本模块不会失败。
+``LangChainCallbackHandler`` 是同一个类的别名。
+
+``serialized`` 为 ``None``（例如 ``RunnableLambda``）时不会抛出
+``AttributeError``，事件名回退为 ``langchain.llm``、``langchain.chain``、
+``langchain.tool``。
+
 用法::
 
     from agentlens import trace
-    from agentlens.integrations.langchain import AgentLensCallbackHandler
+    from agentlens.integrations.langchain import LangChainCallbackHandler
 
-    handler = AgentLensCallbackHandler()
+    handler = LangChainCallbackHandler()
 
-    with trace("langchain-demo"):
-        chain.invoke(
+    @trace("langchain-demo")
+    def run():
+        return chain.invoke(
             {"question": "..."},
             config={"callbacks": [handler]},
         )
+
+    run()
 """
 
 from __future__ import annotations
 
+import sys
 import time
 from typing import Any
 from uuid import UUID
 
 # ---------------------------------------------------------------------------
-# Lazy import — 不安装 langchain-core 时导入本模块不会立刻崩溃
+# Optional base class — 不安装 langchain-core 时导入本模块不会立刻崩溃
 # ---------------------------------------------------------------------------
+
+
+_LANGCHAIN_IMPORT_ERROR = (
+    "未安装 langchain-core。请运行:\n"
+    "  pip install agentlens[langchain]\n"
+    "或:\n"
+    "  pip install langchain-core"
+)
 
 
 def _get_base_handler() -> type:
     """获取 langchain BaseCallbackHandler，未安装时抛出 ImportError。"""
+    # 父包被标成不可用时，即使子模块还留在缓存里，也视为未安装。
+    if "langchain_core" in sys.modules and sys.modules["langchain_core"] is None:
+        raise ImportError(_LANGCHAIN_IMPORT_ERROR)
     try:
         from langchain_core.callbacks.base import (  # type: ignore[import-untyped,unused-ignore]
             BaseCallbackHandler,
         )
     except ImportError:
-        raise ImportError(
-            "未安装 langchain-core。请运行:\n"
-            "  pip install agentlens[langchain]\n"
-            "或:\n"
-            "  pip install langchain-core"
-        ) from None
+        raise ImportError(_LANGCHAIN_IMPORT_ERROR) from None
     return BaseCallbackHandler
+
+
+try:
+    _CallbackHandlerBase = _get_base_handler()
+except ImportError:
+    _CallbackHandlerBase = object
+
+
+def _serialized_dict(state: dict[str, Any]) -> dict[str, Any]:
+    """取出 serialized 字典。
+
+    LangChain 对部分 Runnable（例如 RunnableLambda）传入 ``serialized=None``。
+    这时返回空字典，调用方再用默认事件名。
+    """
+    serialized = state.get("serialized")
+    if isinstance(serialized, dict):
+        return serialized
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -48,14 +85,20 @@ def _get_base_handler() -> type:
 # ---------------------------------------------------------------------------
 
 
-class AgentLensCallbackHandler:
+class AgentLensCallbackHandler(_CallbackHandlerBase):  # type: ignore[misc, valid-type]
     """LangChain callback handler — 将 LangChain 事件写入 AgentLens trace。
 
+    安装了 langchain-core 时继承 ``BaseCallbackHandler``。未安装时基类是
+    ``object``，导入本模块仍然成功；实例化会抛出 ImportError。
+    ``LangChainCallbackHandler`` 是本类的别名。
+
     记录的事件:
-    - on_llm_start/end → llm_call 事件
-    - on_chain_start/end → tool_call 事件
-    - on_tool_start/end → tool_call 事件
+    - on_llm_start/end → llm_call 事件（默认名 ``langchain.llm``）
+    - on_chain_start/end → tool_call 事件（默认名 ``langchain.chain``）
+    - on_tool_start/end → tool_call 事件（默认名 ``langchain.tool``）
     - on_*_error → error 事件
+
+    ``serialized`` 为 None（例如 RunnableLambda）时使用上面的默认名。
     """
 
     def __init__(self) -> None:
@@ -71,7 +114,7 @@ class AgentLensCallbackHandler:
 
     def on_llm_start(
         self,
-        serialized: dict[str, Any],
+        serialized: dict[str, Any] | None,
         prompts: list[str],
         *,
         run_id: UUID,
@@ -125,7 +168,7 @@ class AgentLensCallbackHandler:
 
     def on_chain_start(
         self,
-        serialized: dict[str, Any],
+        serialized: dict[str, Any] | None,
         inputs: dict[str, Any],
         *,
         run_id: UUID,
@@ -179,7 +222,7 @@ class AgentLensCallbackHandler:
 
     def on_tool_start(
         self,
-        serialized: dict[str, Any],
+        serialized: dict[str, Any] | None,
         input_str: str,
         *,
         run_id: UUID,
@@ -245,7 +288,9 @@ class AgentLensCallbackHandler:
         if get_current_run_id() is None:
             return
 
-        model = state.get("serialized", {}).get("kwargs", {}).get("model", "langchain.llm")
+        raw_kwargs = _serialized_dict(state).get("kwargs")
+        kwargs = raw_kwargs if isinstance(raw_kwargs, dict) else {}
+        model = kwargs.get("model", "langchain.llm")
         if not isinstance(model, str):
             model = "langchain.llm"
 
@@ -292,7 +337,7 @@ class AgentLensCallbackHandler:
         if get_current_run_id() is None:
             return
 
-        name = state.get("serialized", {}).get("name", "langchain.chain")
+        name = _serialized_dict(state).get("name", "langchain.chain")
         if not name:
             name = "langchain.chain"
 
@@ -335,7 +380,7 @@ class AgentLensCallbackHandler:
         if get_current_run_id() is None:
             return
 
-        name = state.get("serialized", {}).get("name", "langchain.tool")
+        name = _serialized_dict(state).get("name", "langchain.tool")
         if not name:
             name = "langchain.tool"
 
@@ -382,6 +427,10 @@ class AgentLensCallbackHandler:
             )
         except RuntimeError:
             pass  # 没有 trace 上下文
+
+
+# issue #2 使用的公开名称，与 AgentLensCallbackHandler 是同一个类。
+LangChainCallbackHandler = AgentLensCallbackHandler
 
 
 def _safe_repr(obj: Any) -> Any:

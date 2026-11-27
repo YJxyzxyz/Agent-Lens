@@ -55,5 +55,6 @@ docs/                # 文档
 ## 下一步
 
 - [DeepSeek 集成指南](deepseek.md)
+- [LangChain 集成](langchain.md)
 - [通用函数追踪](generic-tracing.md)
 - [Web Timeline Viewer](web-viewer.md)

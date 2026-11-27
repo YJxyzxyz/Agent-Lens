@@ -1,6 +1,8 @@
 """LangChain AgentLens 集成示例。
 
 演示如何使用 AgentLensCallbackHandler 自动追踪 LangChain runnable。
+LangChainCallbackHandler 是同一个类的别名，继承 LangChain BaseCallbackHandler。
+RunnableLambda 的 serialized 为 None 时，事件名回退为 langchain.chain。
 
 运行方式::
 
@@ -37,12 +39,15 @@ def main() -> None:
     chain = RunnableLambda(step1) | RunnableLambda(step2)
     handler = AgentLensCallbackHandler()
 
-    with trace("langchain-demo"):
-        result = chain.invoke(
+    @trace("langchain-demo")
+    def run() -> str:
+        return chain.invoke(
             {"question": "What is AgentLens?"},
             config={"callbacks": [handler]},
         )
-        print(f"Result: {result}")
+
+    result = run()
+    print(f"Result: {result}")
 
     print("\n示例运行完成！使用以下命令查看追踪结果：")
     print("  agentlens list")

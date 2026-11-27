@@ -75,6 +75,7 @@ agentlens view            # Web 查看器
 - 🤖 **DeepSeek / OpenAI-compatible** 自动追踪（同步与异步 `chat.completions.create`，含 streaming）
 - 💾 **本地 JSONL 存储**
 - 🌳 **事件树** — 事件带 `parent_event_id`，`agentlens tree <run_id>` 按父子关系缩进打印
+- 🔗 **LangChain Callback** — `LangChainCallbackHandler`（`AgentLensCallbackHandler` 的别名）继承 `BaseCallbackHandler`
 - 🖥️ **CLI**（list / show / tree / inspect / diff / view）
 - 🌐 **Web Timeline Viewer** — run dashboard, event timeline, visual diff
 
@@ -133,6 +134,27 @@ agentlens tree <run_id> --base-dir /path/to/runs
 | `error` | 错误 | 异常发生 |
 | `log` | 日志 | 自定义消息 |
 
+## LangChain
+
+`LangChainCallbackHandler` 与 `AgentLensCallbackHandler` 是同一个类。安装了 `langchain-core` 时它继承 LangChain 的 `BaseCallbackHandler`，可以直接放进 Runnable 的 `callbacks`。没安装时这个类退化为普通对象，`import agentlens.integrations.langchain` 仍然成功；创建实例会提示安装 `agentlens[langchain]`。
+
+`serialized` 为 `None`（例如 `RunnableLambda`）时不会抛出 `AttributeError`。事件名回退为 `langchain.llm`、`langchain.chain`、`langchain.tool`。`serialized` 里如果带了 model 或 name，仍使用那些名字。
+
+```python
+from agentlens import trace
+from agentlens.integrations.langchain import LangChainCallbackHandler
+
+handler = LangChainCallbackHandler()
+
+@trace("langchain-demo")
+def run():
+    return chain.invoke({"question": "..."}, config={"callbacks": [handler]})
+
+run()
+```
+
+详见 [LangChain 集成](docs/langchain.md)。
+
 ## DeepSeek / OpenAI-compatible
 
 一行集成，自动追踪 live API 调用。详见 [DeepSeek 集成指南](docs/deepseek.md)。
@@ -154,7 +176,8 @@ agentlens view
 
 - [x] **v0.1** — 基础 tracing / JSONL 存储 / CLI / DeepSeek 集成 / Web Timeline Viewer
 - [x] 事件树 — `parent_event_id`、run 内 contextvar、`agentlens tree`
-- [ ] **v0.2** — LangChain Callback / 更多 provider 集成
+- [x] LangChain Callback — `LangChainCallbackHandler` 继承 `BaseCallbackHandler`；`serialized` 为 `None` 时回退到默认事件名
+- [ ] **v0.2** — 更多 provider 集成
 - [ ] **v0.3** — 统计摘要 / JSON/CSV 导出 / diff 增强
 - [ ] **v0.4** — Run Replay / 回归测试
 - [ ] **v1.0** — 插件系统 / 性能优化 / 文档站点
