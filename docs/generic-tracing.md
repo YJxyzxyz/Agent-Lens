@@ -46,6 +46,26 @@ record_file_read("data/input.json")
 record_file_write("output/report.md", content_preview="# Results\n\nDone.")
 ```
 
+## 异步函数
+
+`@trace` 和 `@traced` 可以装饰 `async def`。上下文会保持到协程结束，所以函数里面的 `await` 仍然算同一次 run。
+
+```python
+import asyncio
+from agentlens import trace, traced
+
+@traced("fetch_page")
+async def fetch_page(url: str) -> str:
+    return url
+
+@trace("async-agent")
+async def main():
+    page = await fetch_page("https://example.com")
+    return page
+
+asyncio.run(main())
+```
+
 ## 自动安全处理
 
 `@traced` 会自动：
