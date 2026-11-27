@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import html
+import re
+import socket
 import sys
+import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -390,3 +395,445 @@ class TestCompareRuns:
         assert "Aligned by type and name" in resp.text
         assert 'class="diff-fields">input</span>' in resp.text
         assert "First difference at step #2" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# 详情页上的逐步查看
+# ---------------------------------------------------------------------------
+
+_START = datetime(2026, 3, 1, tzinfo=timezone.utc)
+_MISSING_PARENT = Path(__file__).parent / "fixtures" / "run_missing_parent.jsonl"
+
+
+def _out_of_order_events() -> list[TraceEvent]:
+    """子事件写在父事件前面，另一条的父事件不在本次记录里。
+
+    文件顺序、时间顺序、树顺序三者不同。逐步查看必须跟文件顺序。
+    """
+    return [
+        TraceEvent(
+            id="child",
+            run_id="ooo",
+            parent_event_id="parent",
+            type="tool_call",
+            name="child-before-parent",
+            output={"n": 1},
+            started_at=_START + timedelta(seconds=5),
+            ended_at=_START + timedelta(seconds=6),
+        ),
+        TraceEvent(
+            id="orphan",
+            run_id="ooo",
+            parent_event_id="missing-parent",
+            type="log",
+            name="orphan-missing",
+            output="[REDACTED]",
+            started_at=_START + timedelta(seconds=1),
+            ended_at=_START + timedelta(seconds=1),
+        ),
+        TraceEvent(
+            id="parent",
+            run_id="ooo",
+            type="llm_call",
+            name="parent-after-child",
+            output="answer",
+            started_at=_START,
+            ended_at=_START + timedelta(milliseconds=10),
+        ),
+    ]
+
+
+def _tree_order(events: list[TraceEvent]) -> list[str]:
+    from agentlens.tree import build_event_tree
+
+    tree = build_event_tree(events)
+    ordered: list[str] = []
+
+    def walk(node: object) -> None:
+        ordered.append(node.event.id)  # type: ignore[attr-defined]
+        for child in node.children:  # type: ignore[attr-defined]
+            walk(child)
+
+    for node in tree.roots:
+        walk(node)
+    for node in tree.detached:
+        walk(node)
+    for group in tree.missing_parents:
+        for node in group.nodes:
+            walk(node)
+    return ordered
+
+
+def _time_order(events: list[TraceEvent]) -> list[str]:
+    ordered = sorted(events, key=lambda event: event.started_at)
+    return [event.id for event in ordered]
+
+
+def _timeline_html(page: str) -> str:
+    match = re.search(
+        r'<div class="timeline">(.*)</div>\s*<div class="footer">',
+        page,
+        re.S,
+    )
+    assert match is not None
+    return match.group(1)
+
+
+def _href(page: str, element_id: str) -> str | None:
+    match = re.search(rf'id="{element_id}" href="([^"]+)"', page)
+    if match is None:
+        return None
+    return html.unescape(match.group(1))
+
+
+def _cards(fragment: str) -> list[dict[str, object]]:
+    pattern = re.compile(r'<div class="([^"]*)" data-event-id="([^"]*)" data-index="(\d+)"([^>]*)>')
+    found: list[dict[str, object]] = []
+    for classes, event_id, index, rest in pattern.findall(fragment):
+        found.append(
+            {
+                "id": event_id,
+                "index": int(index),
+                "current": 'data-replay-current="true"' in rest,
+                "highlighted": "replay-current" in classes.split(),
+                "missing": 'data-parent-missing="true"' in rest,
+            }
+        )
+    return found
+
+
+def _body_is_open(page: str, index: int) -> bool:
+    match = re.search(rf'class="(event-card-body[^"]*)" id="body-ev{index}"', page)
+    assert match is not None
+    return "open" in match.group(1).split()
+
+
+def _assert_read_only_page(page: str) -> None:
+    assert "Read-only" in page
+    assert 'method="post"' not in page
+    assert "<select" not in page
+    assert 'type="number"' not in page
+    assert "/replay" not in page
+
+
+def _assert_controls(
+    page: str,
+    *,
+    step: int,
+    seen: int,
+    count: int,
+    run_id: str,
+) -> None:
+    previous = _href(page, "replay-prev")
+    nxt = _href(page, "replay-next")
+    if step > 1:
+        assert previous == f"/run/{run_id}?step={step - 1}&seen={seen}"
+    else:
+        assert previous is None
+        assert 'id="replay-prev" disabled' in page
+    if step < count:
+        assert nxt == f"/run/{run_id}?step={step + 1}&seen={max(seen, step + 1)}"
+    else:
+        assert nxt is None
+        assert 'id="replay-next" disabled' in page
+    assert f'data-replay-mode="step" data-step="{step}" data-seen="{seen}"' in page
+    assert f"第 {step} / 共 {count} 步" in page
+    assert ">Current<" not in page
+    assert ">当前<" not in page
+    found = set(re.findall(r"\?step=(\d+)", page))
+    expected: set[str] = set()
+    if step > 1:
+        expected.add(str(step - 1))
+    if step < count:
+        expected.add(str(step + 1))
+    assert found == expected
+
+
+def _visible_ids(page: str) -> list[str]:
+    return [str(card["id"]) for card in _cards(_timeline_html(page))]
+
+
+class TestReplayFrame:
+    """逐步查看使用 replay 模块的原顺序，不重排。"""
+
+    def test_visited_prefix_keeps_missing_parent_and_out_of_order_events(self) -> None:
+        from agentlens.replay import replay_run
+        from agentlens.viewer import ReplayStepOutOfRange, replay_frame
+
+        events = _out_of_order_events()
+        file_order = [event.id for event in events]
+        assert _tree_order(events) == ["parent", "child", "orphan"]
+        assert _time_order(events) == ["parent", "orphan", "child"]
+        assert file_order != _tree_order(events)
+        assert file_order != _time_order(events)
+        assert [step.event_id for step in replay_run(events).steps] == file_order
+
+        first = replay_frame(events, step=1, run_id="ooo")
+        assert first["seen"] == 1
+        assert [item["event_id"] for item in first["visible"]] == ["child"]
+        assert first["visible"][0]["current"] is True
+        assert first["visible"][0]["parent_missing"] is False
+        assert first["visible"][0]["parent_event_id"] == "parent"
+        assert first["has_previous"] is False
+
+        second = replay_frame(events, step=2, seen=2, run_id="ooo")
+        assert [item["event_id"] for item in second["visible"]] == ["child", "orphan"]
+        assert [item["current"] for item in second["visible"]] == [False, True]
+        assert second["visible"][1]["parent_missing"] is True
+        assert second["order"] == file_order
+
+        rewound = replay_frame(events, step=1, seen=2, run_id="ooo")
+        assert [item["event_id"] for item in rewound["visible"]] == ["child", "orphan"]
+        assert [item["current"] for item in rewound["visible"]] == [True, False]
+        assert rewound["has_next"] is True
+
+        played = replay_frame(events, step=3, run_id="ooo")
+        assert [item["event_id"] for item in played["visible"]] == file_order
+        assert [item["current"] for item in played["visible"]] == [False, False, True]
+        assert played["has_next"] is False
+        assert [event.id for event in events] == file_order
+
+        with pytest.raises(ReplayStepOutOfRange):
+            replay_frame(events, step=0, run_id="ooo")
+        with pytest.raises(ReplayStepOutOfRange):
+            replay_frame(events, step=4, run_id="ooo")
+        with pytest.raises(ReplayStepOutOfRange):
+            replay_frame(events, step=2, seen=1, run_id="ooo")
+
+
+class TestStepwiseDetailPage:
+    """上一步 / 下一步在原来的 run 详情页上，并且只读。"""
+
+    def test_prev_next_accumulate_file_order_and_stay_read_only(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from agentlens.viewer import create_app
+
+        events = _out_of_order_events()
+        store = _make_store_with_events(tmp_path, events)
+        path = store.base_dir / "ooo.jsonl"
+        before = path.read_bytes()
+        names_before = sorted(item.name for item in store.base_dir.iterdir())
+
+        def _forbid_append(self: JsonlTraceStore, event: TraceEvent) -> None:
+            raise AssertionError("stepwise replay wrote an event")
+
+        def _forbid_connect(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("stepwise replay opened a connection")
+
+        monkeypatch.setattr(JsonlTraceStore, "append_event", _forbid_append)
+        monkeypatch.setattr(socket, "create_connection", _forbid_connect)
+        monkeypatch.setattr(urllib.request, "urlopen", _forbid_connect)
+
+        client = TestClient(create_app(base_dir=store.base_dir))
+        timeline = client.get("/run/ooo")
+        assert timeline.status_code == 200
+        _assert_read_only_page(timeline.text)
+        assert 'data-replay-mode="timeline"' in timeline.text
+        assert "← Back to runs" in timeline.text
+        assert _visible_ids(timeline.text) == ["child", "orphan", "parent"]
+        assert [card["current"] for card in _cards(_timeline_html(timeline.text))] == [
+            False,
+            False,
+            False,
+        ]
+        assert _href(timeline.text, "replay-prev") is None
+        assert _href(timeline.text, "replay-next") == "/run/ooo?step=1&seen=1"
+        assert "?step=2" not in timeline.text
+
+        href: str | None = _href(timeline.text, "replay-next")
+        page = ""
+        step = 0
+        while href is not None:
+            resp = client.get(href)
+            assert resp.status_code == 200
+            page = resp.text
+            step += 1
+            _assert_read_only_page(page)
+            _assert_controls(page, step=step, seen=step, count=3, run_id="ooo")
+            cards = _cards(_timeline_html(page))
+            assert [card["id"] for card in cards] == ["child", "orphan", "parent"][:step]
+            assert [card["current"] for card in cards] == [False] * (step - 1) + [True]
+            assert [card["highlighted"] for card in cards] == [card["current"] for card in cards]
+            assert _body_is_open(page, step - 1)
+            for index in range(step - 1):
+                assert not _body_is_open(page, index)
+            timeline_only = _timeline_html(page)
+            if step == 1:
+                assert "orphan-missing" not in timeline_only
+                assert "parent-after-child" not in timeline_only
+                assert "parent=parent" in timeline_only
+            elif step == 2:
+                assert "child-before-parent" in timeline_only
+                assert "orphan-missing" in timeline_only
+                assert "parent-after-child" not in timeline_only
+                assert ">missing parent</span>" in timeline_only
+            href = _href(page, "replay-next")
+
+        assert step == 3
+        full = _timeline_html(page)
+        assert "child-before-parent" in full
+        assert "orphan-missing" in full
+        assert "parent-after-child" in full
+        assert full.count(">missing parent</span>") == 1
+        assert "[REDACTED]" in full
+        assert _visible_ids(page) != _tree_order(events)
+        assert _visible_ids(page) != _time_order(events)
+
+        back = client.get(_href(page, "replay-prev") or "")
+        assert back.status_code == 200
+        _assert_controls(back.text, step=2, seen=3, count=3, run_id="ooo")
+        cards = _cards(_timeline_html(back.text))
+        assert [card["id"] for card in cards] == ["child", "orphan", "parent"]
+        assert [card["current"] for card in cards] == [False, True, False]
+        assert cards[1]["missing"] is True
+        assert cards[0]["missing"] is False
+        assert cards[2]["missing"] is False
+        assert "parent-after-child" in _timeline_html(back.text)
+        assert _body_is_open(back.text, 1)
+        assert not _body_is_open(back.text, 0)
+        assert not _body_is_open(back.text, 2)
+
+        earlier = client.get(_href(back.text, "replay-prev") or "")
+        _assert_controls(earlier.text, step=1, seen=3, count=3, run_id="ooo")
+        assert _visible_ids(earlier.text) == ["child", "orphan", "parent"]
+        assert [card["current"] for card in _cards(_timeline_html(earlier.text))] == [
+            True,
+            False,
+            False,
+        ]
+        assert _href(earlier.text, "replay-next") == "/run/ooo?step=2&seen=3"
+        assert path.read_bytes() == before
+        assert sorted(item.name for item in store.base_dir.iterdir()) == names_before
+
+    def test_missing_parent_fixture_stays_in_jsonl_order(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        from agentlens.viewer import create_app
+
+        events = [
+            TraceEvent.model_validate_json(line)
+            for line in _MISSING_PARENT.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        file_order = [event.id for event in events]
+        assert file_order != _tree_order(events)
+        base = tmp_path / "runs"
+        base.mkdir()
+        target = base / "run_missing_parent.jsonl"
+        before = _MISSING_PARENT.read_bytes()
+        target.write_bytes(before)
+
+        client = TestClient(create_app(base_dir=base))
+        timeline = client.get("/run/run_missing_parent")
+        assert _visible_ids(timeline.text) == file_order
+
+        href = _href(timeline.text, "replay-next")
+        page = ""
+        step = 0
+        while href is not None:
+            resp = client.get(href)
+            assert resp.status_code == 200
+            page = resp.text
+            step += 1
+            _assert_controls(
+                page,
+                step=step,
+                seen=step,
+                count=len(file_order),
+                run_id="run_missing_parent",
+            )
+            assert _visible_ids(page) == file_order[:step]
+            href = _href(page, "replay-next")
+        assert step == len(file_order)
+        assert _visible_ids(page) == file_order
+        assert target.read_bytes() == before
+
+        rewound = client.get(_href(page, "replay-prev") or "")
+        _assert_controls(
+            rewound.text,
+            step=len(file_order) - 1,
+            seen=len(file_order),
+            count=len(file_order),
+            run_id="run_missing_parent",
+        )
+        assert _visible_ids(rewound.text) == file_order
+
+        orphan = client.get("/run/run_missing_parent?step=3")
+        orphan_cards = _cards(_timeline_html(orphan.text))
+        assert [card["id"] for card in orphan_cards] == ["root", "search", "orphan-a"]
+        assert [card["current"] for card in orphan_cards] == [False, False, True]
+        assert orphan_cards[2]["missing"] is True
+        assert ">missing parent</span>" in _timeline_html(orphan.text)
+        child = client.get("/run/run_missing_parent?step=4&seen=4")
+        child_cards = _cards(_timeline_html(child.text))
+        assert [card["id"] for card in child_cards] == ["root", "search", "orphan-a", "child"]
+        assert child_cards[3]["current"] is True
+        assert child_cards[3]["missing"] is False
+        assert child_cards[2]["missing"] is True
+
+    def test_single_event_disables_both_directions(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        from agentlens.viewer import create_app
+
+        store = _make_store_with_events(
+            tmp_path,
+            [TraceEvent(id="only", run_id="one", type="log", name="only-event")],
+        )
+        client = TestClient(create_app(base_dir=store.base_dir))
+        opened = client.get("/run/one?step=1")
+        assert opened.status_code == 200
+        assert "第 1 / 共 1 步" in opened.text
+        assert ">Current<" not in opened.text
+        assert ">当前<" not in opened.text
+        assert 'id="replay-prev" disabled' in opened.text
+        assert 'id="replay-next" disabled' in opened.text
+        assert _href(opened.text, "replay-prev") is None
+        assert _href(opened.text, "replay-next") is None
+        cards = _cards(_timeline_html(opened.text))
+        assert [card["id"] for card in cards] == ["only"]
+        assert cards[0]["current"] is True
+        assert cards[0]["highlighted"] is True
+
+    def test_step_out_of_range_and_missing_run(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        from agentlens.viewer import create_app
+
+        store = _make_store_with_events(tmp_path, _out_of_order_events())
+        client = TestClient(create_app(base_dir=store.base_dir))
+        for query in ("step=0", "step=4", "step=-1", "step=2&seen=1", "step=1&seen=9"):
+            resp = client.get(f"/run/ooo?{query}")
+            assert resp.status_code == 200
+            assert "Step out of range" in resp.text
+            assert "child-before-parent" not in resp.text
+        missing = client.get("/run/missing?step=1")
+        assert missing.status_code == 200
+        assert "Run not found" in missing.text
+        separate = client.get("/run/ooo/replay")
+        assert separate.status_code == 404
+
+    def test_step_mode_escapes_event_text(self, tmp_path: Path) -> None:
+        from fastapi.testclient import TestClient
+
+        from agentlens.viewer import create_app
+
+        store = _make_store_with_events(
+            tmp_path,
+            [
+                TraceEvent(
+                    run_id="safe",
+                    type="tool_call",
+                    name="safe",
+                    input={"xss": "<script>alert(1)</script>"},
+                )
+            ],
+        )
+        client = TestClient(create_app(base_dir=store.base_dir))
+        resp = client.get("/run/safe?step=1")
+        assert resp.status_code == 200
+        assert "<script>alert(1)</script>" not in resp.text
+        assert "&lt;script&gt;" in resp.text

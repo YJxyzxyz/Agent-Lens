@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import html
 import json
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from agentlens.diff import diff_events
 from agentlens.events import TraceEvent
+from agentlens.replay import replay_run
 from agentlens.storage import JsonlTraceStore
 from agentlens.summary import summarize_run, summary_to_dict
 
@@ -60,6 +62,63 @@ def get_run_detail(store: JsonlTraceStore, run_id: str) -> dict[str, Any]:
         "name": summary.name,
         "events": [e.model_dump(mode="json") for e in events],
         "summary": summary_to_dict(summary),
+    }
+
+
+class ReplayStepOutOfRange(ValueError):
+    """详情页上的逐步查看请求落到了记录范围外面。"""
+
+    def __init__(self, step: int, step_count: int) -> None:
+        self.step = step
+        self.step_count = step_count
+        super().__init__(f"step {step} is outside 1..{step_count}")
+
+
+def replay_frame(
+    events: Sequence[Any],
+    *,
+    step: int,
+    seen: int | None = None,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """逐步查看已经走到的前缀，并标出当前步。
+
+    ``step`` 与 ``seen`` 都从 1 开始，对应 ``agentlens replay`` 文本里的 ``#N``。
+    ``seen`` 省略时等于 ``step``。可见事件是记录顺序里的前 ``seen`` 条，
+    当前步是第 ``step`` 条，并且必须落在这前缀里面。
+    顺序来自 ``replay_run``：JSONL 的原顺序，不按父子关系或时间重排。
+    父事件不在这次记录里时，``parent_missing`` 为真，但这一步仍留在原位置。
+    这里只读入参里的事件，不写存储，也不执行调用。
+    """
+    recorded = replay_run(events, run_id=run_id)
+    count = len(recorded.steps)
+    if seen is None:
+        seen = step
+    invalid = count == 0 or step < 1 or seen < 1 or step > count or seen > count or step > seen
+    if invalid:
+        raise ReplayStepOutOfRange(step, count)
+    known_ids = {item.event_id for item in recorded.steps}
+    visible: list[dict[str, Any]] = []
+    for position, item in enumerate(recorded.steps[:seen]):
+        parent = item.parent_event_id
+        visible.append(
+            {
+                "index": item.index,
+                "event_id": item.event_id,
+                "parent_event_id": parent,
+                "parent_missing": parent is not None and parent not in known_ids,
+                "current": position == step - 1,
+            }
+        )
+    return {
+        "run_id": recorded.run_id,
+        "step": step,
+        "seen": seen,
+        "step_count": count,
+        "has_previous": step > 1,
+        "has_next": step < count,
+        "order": [item.event_id for item in recorded.steps],
+        "visible": visible,
     }
 
 
@@ -153,6 +212,8 @@ _STYLE = """
   .event-card::before { content: ''; position: absolute; left: -22px; top: 16px;
                         width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--border);
                         background: var(--bg); z-index: 1; }
+  .event-card.replay-current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .event-card.replay-current::before { border-color: var(--accent); background: var(--accent); }
   .event-card-header { padding: 10px 14px; cursor: pointer; display: flex; justify-content: space-between;
                        align-items: center; font-size: 0.88rem; gap: 8px; }
   .event-card-header:hover { opacity: 0.88; }
@@ -187,6 +248,10 @@ _STYLE = """
   tr.diff-detail.open { display: table-row; }
   .diff-fields { margin-left: 6px; }
   input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+  .replay-controls { display: flex; align-items: center; gap: 12px; margin: 8px 0 4px;
+                     flex-wrap: wrap; }
+  #replay-position { font-size: 0.85rem; color: var(--muted); }
+  #replay-readonly { margin: 0 0 16px; }
 </style>
 """
 
@@ -316,15 +381,130 @@ def _render_index(summaries: list[dict[str, Any]]) -> str:
 </html>"""
 
 
+def _replay_controls_html(
+    run_id: str,
+    *,
+    step: int | None,
+    seen: int | None,
+    step_count: int,
+) -> str:
+    """详情页上的上一步 / 下一步。
+
+    ``step`` 为空是完整时间线。下一步从第 1 条进入逐步查看。
+    逐步查看时链接只移动一条。上一步保留已经出现的事件，只移动高亮。
+    页面上没有跳转输入，也没有按类型过滤。
+    """
+    if step is None:
+        previous = _disabled_step_button("replay-prev", "Previous step")
+        if step_count > 0:
+            nxt = _step_link("replay-next", _step_href(run_id, 1, 1), "Next step")
+        else:
+            nxt = _disabled_step_button("replay-next", "Next step")
+        position = ""
+        if step_count == 0:
+            note = (
+                '<p class="meta" id="replay-readonly">'
+                "Read-only. This run has no recorded events to step through."
+                "</p>"
+            )
+        else:
+            note = (
+                '<p class="meta" id="replay-readonly">'
+                "Read-only. Next step starts at the first recorded event. "
+                "Visited events stay on the timeline. "
+                "Playback does not re-execute LLM or tool calls."
+                "</p>"
+            )
+        attrs = f'data-replay-mode="timeline" data-step-count="{step_count}"'
+    else:
+        visited = step if seen is None else seen
+        if step > 1:
+            previous = _step_link(
+                "replay-prev",
+                _step_href(run_id, step - 1, visited),
+                "Previous step",
+            )
+        else:
+            previous = _disabled_step_button("replay-prev", "Previous step")
+        if step < step_count:
+            nxt = _step_link(
+                "replay-next",
+                _step_href(run_id, step + 1, max(visited, step + 1)),
+                "Next step",
+            )
+        else:
+            nxt = _disabled_step_button("replay-next", "Next step")
+        position = f'<span id="replay-position">第 {step} / 共 {step_count} 步</span>'
+        note = (
+            '<p class="meta" id="replay-readonly">'
+            "Read-only. Visited events stay on this timeline in the original JSONL order, "
+            "and the current step is highlighted. "
+            "Previous step and Next step do not re-execute LLM or tool calls "
+            "or send recorded output to a model or client."
+            "</p>"
+        )
+        attrs = (
+            f'data-replay-mode="step" data-step="{step}" '
+            f'data-seen="{visited}" data-step-count="{step_count}"'
+        )
+    return (
+        f'<div class="replay-controls" id="replay-controls" {attrs}>'
+        f"{previous}{position}{nxt}</div>{note}"
+    )
+
+
+def _step_href(run_id: str, step: int, seen: int) -> str:
+    rid = html.escape(run_id)
+    return f"/run/{rid}?step={step}&amp;seen={seen}"
+
+
+def _step_link(element_id: str, href: str, label: str) -> str:
+    return f'<a class="btn" id="{element_id}" href="{href}">{label}</a>'
+
+
+def _disabled_step_button(element_id: str, label: str) -> str:
+    return f'<button type="button" class="btn" id="{element_id}" disabled>{label}</button>'
+
+
+def _parent_html(current: dict[str, Any]) -> str:
+    """逐步查看时显示记下的父事件。缺失父事件不改变这一步的位置。"""
+    parent = current.get("parent_event_id")
+    if not parent:
+        return ""
+    text = f"parent={html.escape(str(parent))}"
+    if current.get("parent_missing"):
+        text += ' <span class="badge badge-warning">missing parent</span>'
+    return f'<div class="meta">{text}</div>'
+
+
 def _render_detail(
     run_id: str,
     name: str,
     events: list[dict[str, Any]],
     summary: dict[str, Any] | None = None,
+    *,
+    replay: dict[str, Any] | None = None,
 ) -> str:
-    """渲染 run 详情页（timeline 风格）。"""
+    """渲染 run 详情页（timeline 风格）。
+
+    ``replay`` 为空时列出全部事件。传入 ``replay_frame`` 的结果时，同一页按记录顺序
+    保留已经走到的事件，并高亮当前步。
+    """
+    annotations: list[dict[str, Any] | None] = []
+    shown: list[dict[str, Any]]
+    if replay is None:
+        shown = events
+        annotations = [None] * len(events)
+    else:
+        shown = []
+        for item in replay["visible"]:
+            annotations.append(item)
+            shown.append(events[int(item["index"])])
+
     event_html = ""
-    for i, ev in enumerate(events):
+    for offset, ev in enumerate(shown):
+        ann = annotations[offset]
+        i = offset if ann is None else int(ann["index"])
         eid = f"ev{i}"
         ev_name = html.escape(str(ev.get("name", "")))
         ev_error = ev.get("error")
@@ -344,22 +524,43 @@ def _render_detail(
         meta_json = _pretty_json(ev.get("metadata"))
         error_full = html.escape(str(ev_error)) if ev_error else ""
 
-        expanded = "open" if ev.get("type") == "error" else ""
-        ev_cls = f"ev-{ev.get('type', 'log')}"
+        current = bool(ann and ann["current"])
+        parent_html = _parent_html(ann) if ann else ""
+        parent_missing = bool(ann and ann["parent_missing"])
+        body_cls = (
+            "event-card-body open" if current or ev.get("type") == "error" else "event-card-body"
+        )
+        ev_cls = f"event-card ev-{ev.get('type', 'log')}"
+        if current:
+            ev_cls += " replay-current"
+        event_id = html.escape(str(ev.get("id", "")), quote=True)
+        missing_attr = ' data-parent-missing="true"' if parent_missing else ""
+        current_attr = ' data-replay-current="true"' if current else ""
 
         event_html += f"""
-<div class="event-card {ev_cls}">
+<div class="{ev_cls}" data-event-id="{event_id}" data-index="{i}"{missing_attr}{current_attr}>
   <div class="event-card-header" onclick="toggleEvent('{eid}')">
     <span>{type_badge} <strong>{ev_name}</strong>{err_icon}</span>
     <span style="font-size:0.75rem;color:var(--muted)">{started}{dur_str}</span>
   </div>
-  <div class="event-card-body {expanded}" id="body-{eid}">
+  <div class="{body_cls}" id="body-{eid}">
+    {parent_html}
     {_section("Input", input_json)}
     {_section("Output", output_json)}
     {_section("Metadata", meta_json)}
     {_section("Error", error_full) if error_full else ""}
   </div>
 </div>"""
+
+    step_number = None if replay is None else int(replay["step"])
+    seen_number = None if replay is None else int(replay["seen"])
+    step_count = len(events) if replay is None else int(replay["step_count"])
+    controls = _replay_controls_html(
+        run_id,
+        step=step_number,
+        seen=seen_number,
+        step_count=step_count,
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -378,6 +579,7 @@ def _render_detail(
   </div>
 </div>
 {_detail_stats_html(events, summary)}
+{controls}
 <div class="timeline">
 {event_html}
 </div>
@@ -728,14 +930,36 @@ def create_app(base_dir: Path | None = None):  # noqa: ANN202
         return _render_index(summaries)
 
     @app.get("/run/{run_id}", response_class=HTMLResponse)
-    async def run_detail(run_id: str) -> str:
+    async def run_detail(
+        run_id: str,
+        step: int | None = Query(default=None),
+        seen: int | None = Query(default=None),
+    ) -> str:
         store = _store()
+        if step is not None and run_id not in store.list_runs():
+            return _error_page(f"Run not found: {html.escape(run_id)}")
         detail = get_run_detail(store, run_id)
+        replay = None
+        if step is not None:
+            try:
+                replay = replay_frame(
+                    detail["events"],
+                    step=step,
+                    seen=seen,
+                    run_id=run_id,
+                )
+            except ReplayStepOutOfRange as exc:
+                return _error_page(
+                    "Step out of range: "
+                    f"{html.escape(str(exc.step))} "
+                    f"(this run has {html.escape(str(exc.step_count))} steps)"
+                )
         return _render_detail(
             detail["run_id"],
             detail["name"],
             detail["events"],
             detail.get("summary"),
+            replay=replay,
         )
 
     @app.get("/diff", response_class=HTMLResponse)
