@@ -1,16 +1,20 @@
 """LangChain callback handler 测试。
 
-手动调用 callback 方法，不依赖真实 LangChain chain 或外部 LLM。
+手动调用 callback 方法，并检查 Runnable 能接受 handler。不依赖外部 LLM。
 """
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 from unittest import mock
 
 import pytest
 
+# 在缺失依赖测试把 sys.modules["langchain_core"] 设为 None 之前导入。
+# 否则第一次导入会把 handler 固定成 object，后续继承检查会失败。
+import agentlens.integrations.langchain  # noqa: F401
 from agentlens.events import TraceEvent
 from agentlens.storage import JsonlTraceStore
 
@@ -32,6 +36,29 @@ class TestLangChainHandlerErrors:
 
             with pytest.raises(ImportError, match="langchain-core"):
                 AgentLensCallbackHandler()
+
+    def test_import_without_langchain_degrades_to_object(self):
+        """未安装 langchain-core 时模块仍可导入，handler 退化为 object。"""
+        script = """
+import sys
+sys.modules["langchain_core"] = None
+import agentlens.integrations.langchain as lc
+cls = lc.AgentLensCallbackHandler
+assert all(base.__name__ != "BaseCallbackHandler" for base in cls.__mro__)
+try:
+    cls()
+except ImportError as exc:
+    assert "langchain-core" in str(exc)
+else:
+    raise SystemExit("expected ImportError")
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 class TestLangChainHandlerWithTrace:
@@ -242,3 +269,70 @@ class TestLangChainHandlerWithTrace:
         llm_events = [e for e in events if e.type == "llm_call"]
         assert len(llm_events) == 1
         assert llm_events[0].name == "langchain.llm"
+
+    def test_inherits_base_callback_handler(self):
+        """AgentLensCallbackHandler 继承 LangChain BaseCallbackHandler。"""
+        from langchain_core.callbacks.base import BaseCallbackHandler
+
+        from agentlens.integrations.langchain import AgentLensCallbackHandler
+
+        assert issubclass(AgentLensCallbackHandler, BaseCallbackHandler)
+        handler = AgentLensCallbackHandler()
+        assert isinstance(handler, BaseCallbackHandler)
+
+    def test_langchain_callback_handler_alias(self):
+        """LangChainCallbackHandler 是 AgentLensCallbackHandler 的别名。"""
+        from agentlens.integrations.langchain import (
+            AgentLensCallbackHandler,
+            LangChainCallbackHandler,
+        )
+
+        assert LangChainCallbackHandler is AgentLensCallbackHandler
+        handler = LangChainCallbackHandler()
+        assert type(handler) is AgentLensCallbackHandler
+
+    def test_runnable_accepts_handler(self, tmp_path):
+        """LangChain Runnable 接受该 handler 并记下 chain 事件。"""
+        from langchain_core.runnables import RunnableLambda
+
+        from agentlens.context import set_current_trace
+        from agentlens.integrations.langchain import AgentLensCallbackHandler
+
+        handler = AgentLensCallbackHandler()
+        store = JsonlTraceStore(base_dir=tmp_path / "runs")
+        runnable = RunnableLambda(lambda data: {"answer": data["question"].upper()})
+
+        with set_current_trace("run_lc_runnable", store):
+            result = runnable.invoke(
+                {"question": "hi"},
+                config={"callbacks": [handler]},
+            )
+
+        assert result == {"answer": "HI"}
+        events = store.load_run("run_lc_runnable")
+        tool_events = [e for e in events if e.type == "tool_call"]
+        assert len(tool_events) == 1
+        assert tool_events[0].name == "langchain.chain"
+
+    def test_serialized_none_falls_back_to_default_names(self, tmp_path):
+        """issue #2：serialized 为 None（如 RunnableLambda）时不崩溃，用默认名记录。"""
+        from agentlens.context import set_current_trace
+        from agentlens.integrations.langchain import AgentLensCallbackHandler
+
+        handler = AgentLensCallbackHandler()
+        store = JsonlTraceStore(base_dir=tmp_path / "runs")
+
+        with set_current_trace("run_lc_serial_none", store):
+            handler.on_llm_start(None, ["hi"], run_id="run-llm-none")
+            handler.on_llm_end(mock.MagicMock(), run_id="run-llm-none")
+            handler.on_chain_start(None, {"question": "hi"}, run_id="run-chain-none")
+            handler.on_chain_end({"answer": "hello"}, run_id="run-chain-none")
+            handler.on_tool_start(None, "query", run_id="run-tool-none")
+            handler.on_tool_end({"results": 1}, run_id="run-tool-none")
+
+        events = store.load_run("run_lc_serial_none")
+        llm_events = [e for e in events if e.type == "llm_call"]
+        assert len(llm_events) == 1
+        assert llm_events[0].name == "langchain.llm"
+        tool_events = [e for e in events if e.type == "tool_call"]
+        assert [e.name for e in tool_events] == ["langchain.chain", "langchain.tool"]
