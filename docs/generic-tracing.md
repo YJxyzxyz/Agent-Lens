@@ -66,6 +66,25 @@ async def main():
 asyncio.run(main())
 ```
 
+## 事件树
+
+`@trace` 和 `@traced` 会把父子关系记到每条事件的 `parent_event_id`，并写入该 run 的 JSONL。
+
+- `@trace` 的 `run_start` 是根（`parent_event_id` 为 `null`）。函数体内直接记录的事件以这条 `run_start` 为父事件，`run_end` 也是。
+- `@traced` 在函数执行期间成为当前父事件。里面再调用的 `@traced` 或 `record_*` 是它的子事件。
+- 父事件 id 放在 contextvar 里，只对当前这次 run 生效。新的 `@trace` 会清空它，不会把外层 run 的父事件带进来。
+- 需要指定别的父事件时用 `record_event(..., parent_event_id="...")`。传入 `None` 会强制这条事件成为根。
+
+子事件可能先写入，对应的 `@traced` 事件后写入。还原树时按 id 查找，不要求父事件排在前面。
+
+```bash
+agentlens tree <run_id>
+```
+
+这是缩进后的事件树。`agentlens show <run_id>` 仍然是线性时间线，`agentlens view` 仍然是 Web 查看器。
+
+如果某条事件的 `parent_event_id` 在这次 run 里不存在，`tree` 仍会打印该事件和它的子树，并在事件末尾加上 `[missing parent: id]`。同一个缺失 id 的事件放在一组，不同 id 分开。最后一行是 `N orphans, M missing parents`。父事件都能找到时没有这个标记，摘要是 `0 orphans, 0 missing parents`。
+
 ## 自动安全处理
 
 `@traced` 会自动：

@@ -13,14 +13,17 @@ import functools
 import inspect
 import secrets
 import traceback as tb
+import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any, TypeVar
 
 from agentlens.context import (
+    get_current_parent_event_id,
     get_current_run_id,
     require_current_run_id,
     require_current_store,
+    set_current_parent_event_id,
     set_current_trace,
 )
 from agentlens.events import EventType, TraceEvent
@@ -28,6 +31,13 @@ from agentlens.serialization import safe_serialize
 from agentlens.storage import JsonlTraceStore
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+class _UnsetType:
+    """区分「调用方没传父事件」和「调用方显式传入 None」。"""
+
+
+_UNSET = _UnsetType()
 
 
 # ---------------------------------------------------------------------------
@@ -89,39 +99,59 @@ def trace(
             _run_id = run_id if run_id is not None else _generate_run_id()
             return _store, _run_id
 
-        def _mark_start(_store: JsonlTraceStore, _run_id: str) -> None:
-            start_time = datetime.now(timezone.utc)
-            _store.append_event(
-                TraceEvent(
-                    run_id=_run_id,
-                    type="run_start",
-                    name=name,
-                    started_at=start_time,
-                )
+        def _append_run_event(
+            _store: JsonlTraceStore,
+            _run_id: str,
+            *,
+            event_type: EventType,
+            output: Any | None = None,
+            error: str | None = None,
+            metadata: dict[str, Any] | None = None,
+            started_at: datetime | None = None,
+            ended_at: datetime | None = None,
+        ) -> TraceEvent:
+            """写入一条 run 生命周期事件。父事件取自当前 run 的 contextvar。"""
+            now = datetime.now(timezone.utc)
+            event = TraceEvent(
+                run_id=_run_id,
+                parent_event_id=get_current_parent_event_id(),
+                type=event_type,
+                name=name,
+                output=output,
+                metadata=metadata or {},
+                started_at=started_at or now,
+                ended_at=ended_at,
+                error=error,
+            )
+            _store.append_event(event)
+            return event
+
+        def _mark_start(_store: JsonlTraceStore, _run_id: str) -> TraceEvent:
+            return _append_run_event(
+                _store,
+                _run_id,
+                event_type="run_start",
+                started_at=datetime.now(timezone.utc),
             )
 
         def _mark_end(_store: JsonlTraceStore, _run_id: str, result: Any) -> None:
             end_time = datetime.now(timezone.utc)
-            _store.append_event(
-                TraceEvent(
-                    run_id=_run_id,
-                    type="run_end",
-                    name=name,
-                    started_at=end_time,
-                    ended_at=end_time,
-                    output={"result": str(result)[:200] if result is not None else None},
-                )
+            _append_run_event(
+                _store,
+                _run_id,
+                event_type="run_end",
+                started_at=end_time,
+                ended_at=end_time,
+                output={"result": str(result)[:200] if result is not None else None},
             )
 
         def _mark_error(_store: JsonlTraceStore, _run_id: str, exc: BaseException) -> None:
-            _store.append_event(
-                TraceEvent(
-                    run_id=_run_id,
-                    type="error",
-                    name=name,
-                    error=f"{type(exc).__name__}: {exc}",
-                    metadata={"traceback": tb.format_exc()},
-                )
+            _append_run_event(
+                _store,
+                _run_id,
+                event_type="error",
+                error=f"{type(exc).__name__}: {exc}",
+                metadata={"traceback": tb.format_exc()},
             )
 
         if inspect.iscoroutinefunction(func):
@@ -130,20 +160,21 @@ def trace(
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                 _store, _run_id = _prepare()
                 with set_current_trace(_run_id, _store):
-                    _mark_start(_store, _run_id)
-                    try:
-                        result = await func(*args, **kwargs)
-                    except asyncio.CancelledError as exc:
+                    start_event = _mark_start(_store, _run_id)
+                    with set_current_parent_event_id(start_event.id):
                         try:
+                            result = await func(*args, **kwargs)
+                        except asyncio.CancelledError as exc:
+                            try:
+                                _mark_error(_store, _run_id, exc)
+                            except Exception:
+                                pass
+                            raise
+                        except Exception as exc:
                             _mark_error(_store, _run_id, exc)
-                        except Exception:
-                            pass
-                        raise
-                    except Exception as exc:
-                        _mark_error(_store, _run_id, exc)
-                        raise
-                    _mark_end(_store, _run_id, result)
-                    return result
+                            raise
+                        _mark_end(_store, _run_id, result)
+                        return result
 
             return async_wrapper  # type: ignore[return-value]
 
@@ -152,14 +183,15 @@ def trace(
             _store, _run_id = _prepare()
 
             with set_current_trace(_run_id, _store):
-                _mark_start(_store, _run_id)
-                try:
-                    result = func(*args, **kwargs)
-                except Exception as exc:
-                    _mark_error(_store, _run_id, exc)
-                    raise
-                _mark_end(_store, _run_id, result)
-                return result
+                start_event = _mark_start(_store, _run_id)
+                with set_current_parent_event_id(start_event.id):
+                    try:
+                        result = func(*args, **kwargs)
+                    except Exception as exc:
+                        _mark_error(_store, _run_id, exc)
+                        raise
+                    _mark_end(_store, _run_id, result)
+                    return result
 
         return wrapper  # type: ignore[return-value]
 
@@ -171,6 +203,27 @@ def trace(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_parent_event_id(
+    parent_event_id: str | None | _UnsetType,
+    parent_id: str | None | _UnsetType,
+) -> str | None:
+    """决定写入 JSONL 的父事件 ID。
+
+    两个参数都没传时，使用当前 run 的 contextvar。显式传入的值（包括 None）
+    优先于上下文。``parent_event_id`` 与 ``parent_id`` 同时传入时必须相同。
+    """
+    explicit: list[str | None] = []
+    if not isinstance(parent_event_id, _UnsetType):
+        explicit.append(parent_event_id)
+    if not isinstance(parent_id, _UnsetType):
+        explicit.append(parent_id)
+    if not explicit:
+        return get_current_parent_event_id()
+    if len(explicit) == 2 and explicit[0] != explicit[1]:
+        raise ValueError("parent_event_id 和 parent_id 不一致")
+    return explicit[0]
+
+
 def record_event(
     type: EventType,
     name: str,
@@ -178,11 +231,16 @@ def record_event(
     output: Any | None = None,
     metadata: dict[str, Any] | None = None,
     error: str | None = None,
-    parent_id: str | None = None,
+    parent_id: str | None | _UnsetType = _UNSET,
     started_at: datetime | None = None,
     ended_at: datetime | None = None,
+    parent_event_id: str | None | _UnsetType = _UNSET,
+    event_id: str | None = None,
 ) -> TraceEvent:
     """向当前 run 追加一条事件。
+
+    未指定父事件时，使用当前 run 上下文里的 ``parent_event_id``。
+    该上下文由 ``@trace`` / ``@traced`` 设置，并且在进入新的 run 时清空。
 
     Args:
         type: 事件类型。
@@ -191,23 +249,31 @@ def record_event(
         output: 事件输出，可选。
         metadata: 附加元数据，可选。
         error: 错误信息，可选。
-        parent_id: 父事件 ID，可选。
+        parent_id: 父事件 ID 的兼容参数。不传则使用当前上下文；传入 None 表示根事件。
         started_at: 事件开始时间，可选。不传则使用当前时间。
         ended_at: 事件结束时间，可选。不传则使用当前时间。
+        parent_event_id: 父事件 ID。语义与 ``parent_id`` 相同，同时传入时必须一致。
+        event_id: 事件 ID，可选。不传则自动生成。嵌套 span 会预先分配 ID，
+            让函数体内的子事件能指向这条尚未写盘的事件。
 
     Returns:
         创建并已存储的 TraceEvent 实例。
 
     Raises:
         RuntimeError: 当前无活跃 trace 上下文。
+        ValueError: ``parent_event_id`` 与 ``parent_id`` 同时传入且不一致。
     """
     run_id = require_current_run_id()
     store = require_current_store()
+    resolved_parent = _resolve_parent_event_id(parent_event_id, parent_id)
 
     now = datetime.now(timezone.utc)
+    event_kwargs: dict[str, Any] = {}
+    if event_id is not None:
+        event_kwargs["id"] = event_id
     event = TraceEvent(
         run_id=run_id,
-        parent_id=parent_id,
+        parent_event_id=resolved_parent,
         type=type,
         name=name,
         input=input,
@@ -216,6 +282,7 @@ def record_event(
         started_at=started_at or now,
         ended_at=ended_at or now,
         error=error,
+        **event_kwargs,
     )
     store.append_event(event)
     return event
@@ -426,6 +493,8 @@ def _traced_impl(
         result: Any,
         started_at: datetime,
         ended_at: datetime,
+        event_id: str,
+        parent_event_id: str | None,
     ) -> None:
         safe_output = safe_serialize(result) if capture_output else None
         record_event(
@@ -436,6 +505,8 @@ def _traced_impl(
             metadata=_metadata(started_at, ended_at),
             started_at=started_at,
             ended_at=ended_at,
+            parent_event_id=parent_event_id,
+            event_id=event_id,
         )
 
     def _record_failure(
@@ -443,6 +514,8 @@ def _traced_impl(
         exc: BaseException,
         started_at: datetime,
         ended_at: datetime,
+        event_id: str,
+        parent_event_id: str | None,
     ) -> None:
         record_event(
             type="error",
@@ -452,6 +525,8 @@ def _traced_impl(
             metadata=_metadata(started_at, ended_at),
             started_at=started_at,
             ended_at=ended_at,
+            parent_event_id=parent_event_id,
+            event_id=event_id,
         )
 
     if inspect.iscoroutinefunction(func):
@@ -461,24 +536,27 @@ def _traced_impl(
             if get_current_run_id() is None:
                 return await func(*args, **kwargs)
 
+            parent_before = get_current_parent_event_id()
+            event_id = uuid.uuid4().hex[:16]
             safe_input = _safe_input(args, kwargs)
             started_at = datetime.now(timezone.utc)
             try:
-                result = await func(*args, **kwargs)
+                with set_current_parent_event_id(event_id):
+                    result = await func(*args, **kwargs)
             except asyncio.CancelledError as exc:
                 ended_at = datetime.now(timezone.utc)
                 try:
-                    _record_failure(safe_input, exc, started_at, ended_at)
+                    _record_failure(safe_input, exc, started_at, ended_at, event_id, parent_before)
                 except Exception:
                     pass
                 raise
             except Exception as exc:
                 ended_at = datetime.now(timezone.utc)
-                _record_failure(safe_input, exc, started_at, ended_at)
+                _record_failure(safe_input, exc, started_at, ended_at, event_id, parent_before)
                 raise
 
             ended_at = datetime.now(timezone.utc)
-            _record_success(safe_input, result, started_at, ended_at)
+            _record_success(safe_input, result, started_at, ended_at, event_id, parent_before)
             return result
 
         return async_wrapper  # type: ignore[return-value]
@@ -489,18 +567,21 @@ def _traced_impl(
         if get_current_run_id() is None:
             return func(*args, **kwargs)
 
+        parent_before = get_current_parent_event_id()
+        event_id = uuid.uuid4().hex[:16]
         safe_input = _safe_input(args, kwargs)
         started_at = datetime.now(timezone.utc)
 
         try:
-            result = func(*args, **kwargs)
+            with set_current_parent_event_id(event_id):
+                result = func(*args, **kwargs)
         except Exception as exc:
             ended_at = datetime.now(timezone.utc)
-            _record_failure(safe_input, exc, started_at, ended_at)
+            _record_failure(safe_input, exc, started_at, ended_at, event_id, parent_before)
             raise
 
         ended_at = datetime.now(timezone.utc)
-        _record_success(safe_input, result, started_at, ended_at)
+        _record_success(safe_input, result, started_at, ended_at, event_id, parent_before)
         return result
 
     return wrapper  # type: ignore[return-value]

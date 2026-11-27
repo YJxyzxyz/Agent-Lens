@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 # ---------------------------------------------------------------------------
 # 事件类型
@@ -51,7 +51,9 @@ class TraceEvent(BaseModel):
     Attributes:
         id: 事件唯一标识符。
         run_id: 所属运行 ID。
-        parent_id: 父事件 ID（用于构建事件树），可选。
+        parent_event_id: 父事件 ID。根事件为 None。JSONL 使用这个字段名，
+            以便之后按 id 还原事件树。构造时仍接受 ``parent_id``，
+            ``event.parent_id`` 读到的是同一个值。
         type: 事件类型。
         name: 事件名称（如模型名、工具名、步骤名等）。
         input: 事件输入，可选。
@@ -64,7 +66,10 @@ class TraceEvent(BaseModel):
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
     run_id: str
-    parent_id: str | None = None
+    parent_event_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("parent_event_id", "parent_id"),
+    )
     type: EventType
     name: str
     input: Any | None = None
@@ -74,4 +79,9 @@ class TraceEvent(BaseModel):
     ended_at: datetime | None = None
     error: str | None = None
 
-    model_config = {"extra": "forbid"}
+    model_config = {"extra": "forbid", "populate_by_name": True}
+
+    @property
+    def parent_id(self) -> str | None:
+        """``parent_event_id`` 的兼容别名。"""
+        return self.parent_event_id

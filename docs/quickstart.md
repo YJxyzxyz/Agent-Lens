@@ -28,13 +28,16 @@ python examples/simple_agent.py
 # 列出所有 run
 agentlens list
 
-# 查看事件时间线
+# 查看事件时间线（线性，按记录顺序）
 agentlens show <run_id>
+
+# 按 parent_event_id 缩进打印事件树
+agentlens tree <run_id>
 
 # 查看完整 JSON
 agentlens inspect <run_id>
 
-# 启动 Web 查看器
+# 启动 Web 查看器（不是事件树；事件树用上面的 tree）
 pip install -e ".[web]"
 agentlens view
 ```

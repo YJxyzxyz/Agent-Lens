@@ -64,6 +64,22 @@ class TestTraceEvent:
         assert restored.input == event.input
         assert restored.output == event.output
 
+    def test_parent_event_id_alias_and_json_name(self) -> None:
+        """parent_id 仍可构造和读取，JSONL 字段名是 parent_event_id。"""
+        event = TraceEvent(
+            run_id="run_test_parent",
+            parent_id="evt_abc",
+            type="log",
+            name="hello",
+        )
+        assert event.parent_event_id == "evt_abc"
+        assert event.parent_id == "evt_abc"
+
+        restored = TraceEvent.model_validate_json(event.model_dump_json())
+        assert restored.parent_event_id == "evt_abc"
+        assert '"parent_event_id"' in event.model_dump_json()
+        assert '"parent_id"' not in event.model_dump_json()
+
     def test_error_event(self) -> None:
         """可以创建 error 类型事件并包含错误信息。"""
         event = TraceEvent(

@@ -16,7 +16,11 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit
 
-from agentlens.context import get_current_run_id, get_current_store
+from agentlens.context import (
+    get_current_parent_event_id,
+    get_current_run_id,
+    get_current_store,
+)
 from agentlens.events import TraceEvent
 from agentlens.serialization import REDACTED, safe_serialize, sanitize_mapping
 from agentlens.storage import JsonlTraceStore
@@ -77,7 +81,7 @@ def instrument_openai_compatible(
         if get_current_run_id() is None:
             return _original_create(self_comp, *args, **kwargs)
 
-        run_id, store = _capture_context()
+        run_id, store, parent_event_id = _capture_context()
         model = _requested_model(kwargs, provider)
         safe_input = _build_safe_input(kwargs)
         base_meta = _base_metadata(provider, model, self_comp)
@@ -97,6 +101,7 @@ def instrument_openai_compatible(
                 metadata=_with_duration(base_meta, started_at, ended_at),
                 started_at=started_at,
                 ended_at=ended_at,
+                parent_event_id=parent_event_id,
             )
             raise
 
@@ -116,6 +121,7 @@ def instrument_openai_compatible(
                     error=error,
                     completed=completed,
                     ttft_ms=ttft_ms,
+                    parent_event_id=parent_event_id,
                 ),
             )
 
@@ -127,6 +133,7 @@ def instrument_openai_compatible(
             response=response,
             base_meta=base_meta,
             started_at=started_at,
+            parent_event_id=parent_event_id,
         )
         return response
 
@@ -135,7 +142,7 @@ def instrument_openai_compatible(
         if get_current_run_id() is None:
             return await _maybe_await(_original_acreate(self_comp, *args, **kwargs))
 
-        run_id, store = _capture_context()
+        run_id, store, parent_event_id = _capture_context()
         model = _requested_model(kwargs, provider)
         safe_input = _build_safe_input(kwargs)
         base_meta = _base_metadata(provider, model, self_comp)
@@ -155,6 +162,7 @@ def instrument_openai_compatible(
                 metadata=_with_duration(base_meta, started_at, ended_at),
                 started_at=started_at,
                 ended_at=ended_at,
+                parent_event_id=parent_event_id,
             )
             raise
 
@@ -174,6 +182,7 @@ def instrument_openai_compatible(
                     error=error,
                     completed=completed,
                     ttft_ms=ttft_ms,
+                    parent_event_id=parent_event_id,
                 ),
             )
 
@@ -185,6 +194,7 @@ def instrument_openai_compatible(
             response=response,
             base_meta=base_meta,
             started_at=started_at,
+            parent_event_id=parent_event_id,
         )
         return response
 
@@ -257,9 +267,14 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
-def _capture_context() -> tuple[str | None, JsonlTraceStore | None]:
-    """读取当前 trace 的 run_id 与 store。流式响应可能在上下文退出后才消费完。"""
-    return get_current_run_id(), get_current_store()
+def _capture_context() -> tuple[str | None, JsonlTraceStore | None, str | None]:
+    """读取当前 trace 的 run_id、store 与父事件。
+
+    流式响应可能在上下文退出后才消费完，所以父事件在调用开始时捕获。
+    之后即使当前 contextvar 变成了别的 run 或别的 span，这条 llm_call
+    仍然挂在发起调用的那次 run 的父事件上。
+    """
+    return get_current_run_id(), get_current_store(), get_current_parent_event_id()
 
 
 def _requested_model(kwargs: dict[str, Any], provider: str) -> str:
@@ -331,6 +346,7 @@ def _write_event(
     error: str | None = None,
     started_at: datetime | None = None,
     ended_at: datetime | None = None,
+    parent_event_id: str | None = None,
 ) -> None:
     """把事件写入发起调用时捕获的 store。没有上下文时静默跳过。"""
     if store is None or run_id is None:
@@ -338,6 +354,7 @@ def _write_event(
     now = datetime.now(timezone.utc)
     event = TraceEvent(
         run_id=run_id,
+        parent_event_id=parent_event_id,
         type=type,  # type: ignore[arg-type]
         name=name,
         input=input,
@@ -359,6 +376,7 @@ def _write_success(
     response: Any,
     base_meta: dict[str, Any],
     started_at: datetime,
+    parent_event_id: str | None = None,
 ) -> None:
     """记录一次非流式 llm_call。"""
     ended_at = datetime.now(timezone.utc)
@@ -379,6 +397,7 @@ def _write_success(
         metadata=meta,
         started_at=started_at,
         ended_at=ended_at,
+        parent_event_id=parent_event_id,
     )
 
 
@@ -393,6 +412,7 @@ def _write_error(
     started_at: datetime,
     ended_at: datetime,
     output: Any | None = None,
+    parent_event_id: str | None = None,
 ) -> None:
     """记录 error 事件。追踪失败不应覆盖原始异常，因此吞掉写入错误。"""
     try:
@@ -406,6 +426,7 @@ def _write_error(
             error=f"{type(exc).__name__}: {exc}",
             started_at=started_at,
             ended_at=ended_at,
+            parent_event_id=parent_event_id,
         )
     except Exception:
         return
@@ -424,6 +445,7 @@ def _finalize_stream(
     error: BaseException | None,
     completed: bool,
     ttft_ms: int | None,
+    parent_event_id: str | None = None,
 ) -> None:
     """流结束或失败时写一条事件。"""
     ended_at = datetime.now(timezone.utc)
@@ -451,6 +473,7 @@ def _finalize_stream(
             started_at=started_at,
             ended_at=ended_at,
             output=safe_output,
+            parent_event_id=parent_event_id,
         )
         return
 
@@ -465,6 +488,7 @@ def _finalize_stream(
             metadata=meta,
             started_at=started_at,
             ended_at=ended_at,
+            parent_event_id=parent_event_id,
         )
     except Exception:
         return

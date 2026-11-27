@@ -910,3 +910,66 @@ class TestAsyncOpenAICompatible:
         assert event.type == "llm_call"
         assert event.metadata["stream_completed"] is False
         assert event.output["choices"][0]["message"]["content"] == "Hel"
+
+
+class TestParentEventIdCapture:
+    """OpenAI 调用在开始时捕获父事件，流结束时不再读 contextvar。"""
+
+    def test_sync_call_uses_current_parent(self, tmp_path):
+        from openai.resources.chat.completions import Completions
+
+        from agentlens import JsonlTraceStore
+        from agentlens.context import set_current_parent_event_id, set_current_trace
+        from agentlens.integrations.openai_compatible import (
+            instrument_openai_compatible,
+            uninstrument_openai_compatible,
+        )
+
+        _reset_instrument_state()
+        with mock.patch.object(Completions, "create", side_effect=_fake_create_response):
+            instrument_openai_compatible(provider="deepseek")
+            try:
+                store = JsonlTraceStore(base_dir=tmp_path)
+                with set_current_trace("run_parent_sync", store):
+                    with set_current_parent_event_id("span-1"):
+                        comp = Completions(client=mock.MagicMock())
+                        comp.create(model="deepseek-chat", messages=[])
+            finally:
+                uninstrument_openai_compatible()
+
+        event = store.load_run("run_parent_sync")[0]
+        assert event.parent_event_id == "span-1"
+
+    def test_stream_keeps_parent_captured_at_call_start(self, tmp_path):
+        from openai.resources.chat.completions import Completions
+
+        from agentlens import JsonlTraceStore
+        from agentlens.context import set_current_parent_event_id, set_current_trace
+        from agentlens.integrations.openai_compatible import (
+            instrument_openai_compatible,
+            uninstrument_openai_compatible,
+        )
+
+        _reset_instrument_state()
+        chunks = [_chunk("Hel"), _chunk("lo", finish="stop")]
+
+        def _sync_create(self_comp, **kwargs):  # noqa: ANN001, ANN003
+            return _FakeSyncStream(chunks)
+
+        with mock.patch.object(Completions, "create", side_effect=_sync_create):
+            instrument_openai_compatible(provider="deepseek")
+            try:
+                store = JsonlTraceStore(base_dir=tmp_path)
+                with set_current_trace("run_parent_stream", store):
+                    with set_current_parent_event_id("span-at-start"):
+                        comp = Completions(client=mock.MagicMock())
+                        stream = comp.create(model="deepseek-chat", messages=[], stream=True)
+                    with set_current_parent_event_id("span-while-reading"):
+                        for _item in stream:
+                            pass
+            finally:
+                uninstrument_openai_compatible()
+
+        event = store.load_run("run_parent_stream")[0]
+        assert event.type == "llm_call"
+        assert event.parent_event_id == "span-at-start"

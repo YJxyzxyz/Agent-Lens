@@ -16,6 +16,8 @@ agentlens view
 
 打开 http://127.0.0.1:8765
 
+按父子关系缩进查看同一次 run 用命令行 `agentlens tree <run_id>`。`agentlens view` 仍然是这里的 Web 时间线，不会改成树状命令。
+
 ## 选项
 
 ```bash

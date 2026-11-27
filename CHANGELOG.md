@@ -6,6 +6,7 @@ All notable changes to AgentLens will be documented in this file.
 
 ### Features
 
+- **事件树** — 事件增加 `parent_event_id`（构造和读取仍接受 `parent_id`）。同一次 run 内，`@trace` / `@traced` 用 contextvar 传递父事件；新的 run 会清空该上下文，不会串到其他 run。JSONL 记下这个字段，父事件可以晚于子事件写入。`agentlens tree <run_id>` 按父子关系缩进打印。父 id 在本次 run 中不存在时，事件和子树留在顶层并标记 `[missing parent: id]`，按缺失 id 分组，最后一行摘要为 `N orphans, M missing parents`。`show` 仍是线性时间线，`view` 仍是 Web 查看器。
 - **Async OpenAI-compatible tracing** — `instrument_openai_compatible` 同时 patch 同步 `Completions.create` 和异步 `AsyncCompletions.create`。`await client.chat.completions.create(...)` 会记录 `llm_call`，异步实现只 await 原始协程，不调用同步方法，也不阻塞事件循环。`instrument_deepseek()` 走同一条路径。
 - **Streaming chat completions** — 同步和异步 `stream=True` 会包装返回的流，在流结束、提前停止或中途失败时写入一条 `llm_call` 或 `error`。记录 `duration_ms`、`ttft_ms`、`usage`（如果响应里有）和 `stream_completed`。
 - **Async `@trace` / `@traced`** — 协程函数的 trace 上下文保持到 await 结束。任务取消时记录 `CancelledError` 并继续向外抛出。

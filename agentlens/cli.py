@@ -1,6 +1,8 @@
 """AgentLens CLI — 基于 Typer 的命令行工具。
 
-提供 list / show / inspect / diff 四个子命令。
+提供 list / show / tree / inspect / diff / view 子命令。
+``show`` 是线性时间线，``tree`` 是按 parent_event_id 缩进的事件树，
+``view`` 启动本地 Web 查看器。
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from rich.console import Console
 from rich.table import Table
 
 from agentlens.storage import JsonlTraceStore
+from agentlens.tree import format_event_tree
 
 app = typer.Typer(
     name="agentlens",
@@ -120,6 +123,34 @@ def show_run(
 
 
 # ---------------------------------------------------------------------------
+# tree 命令
+# ---------------------------------------------------------------------------
+
+
+@app.command("tree")
+def tree_run(
+    run_id: str = typer.Argument(..., help="要查看的 run_id"),
+    base_dir: Path | None = typer.Option(
+        None,
+        "--base-dir",
+        "-d",
+        help="存储根目录，默认 .agentlens/runs/",
+    ),
+) -> None:
+    """按父子关系缩进打印 run 的事件树。"""
+    store = _get_store(base_dir)
+    events = store.load_run(run_id)
+
+    if not events:
+        console.print(f"[red]未找到 run: {run_id}[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"\n[bold]Run:[/bold] {run_id}\n")
+    console.print(format_event_tree(events), markup=False, highlight=False)
+    console.print("")
+
+
+# ---------------------------------------------------------------------------
 # inspect 命令
 # ---------------------------------------------------------------------------
 
@@ -160,6 +191,7 @@ def inspect_run(
                 if k
                 in {
                     "id",
+                    "parent_event_id",
                     "type",
                     "name",
                     "input",
