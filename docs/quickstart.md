@@ -48,6 +48,10 @@ agentlens export <run_id> --format csv --output run.csv
 # 对比两次 run。默认按 type/name 对齐，并比较 error、input、output
 agentlens diff <run_a> <run_b>
 
+# 按记录顺序回放一次 run，或用基线做回归检查。两者都不重新执行
+agentlens replay <run_id>
+agentlens regression <baseline> <candidate>
+
 # 启动 Web 查看器（不是事件树；事件树用上面的 tree）
 pip install -e ".[web]"
 agentlens view
@@ -69,4 +73,5 @@ docs/                # 文档
 - [LangChain 集成](langchain.md)
 - [通用函数追踪](generic-tracing.md)
 - [统计 / 导出 / diff](stats-export.md)
+- [回放 / 回归](replay.md)
 - [Web Timeline Viewer](web-viewer.md)
